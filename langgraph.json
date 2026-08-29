@@ -1,0 +1,8 @@
+{
+  "dependencies": ["."],
+  "graphs": {
+    "jira_delivery": "agentic_workflow.server:graph",
+    "pr_review": "agentic_workflow.pr_review_server:graph"
+  },
+  "env": ".env"
+}

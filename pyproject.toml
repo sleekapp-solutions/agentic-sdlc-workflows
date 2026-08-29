@@ -1,0 +1,32 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "agentic-sdlc-workflows"
+version = "0.1.0"
+description = "Human-approved Jira delivery and GitHub pull-request review workflows powered by local Codex"
+requires-python = ">=3.11"
+dependencies = [
+  "langgraph>=1.0,<2.0",
+  "langgraph-checkpoint-sqlite>=3.0,<4.0",
+  "openai>=1.0,<3.0",
+  "python-dotenv>=1.0,<2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.0",
+  "langgraph-cli[inmem]>=0.4,<0.5",
+  "langgraph-api>=0.12,<0.13",
+  "langgraph-runtime-inmem>=0.32,<0.33",
+]
+
+[project.scripts]
+agentic-workflows = "agentic_workflow.cli:main"
+
+[tool.pytest.ini_options]
+testpaths = ["workflow_tests"]
+
+[tool.setuptools.packages.find]
+include = ["agentic_workflow*"]

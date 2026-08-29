@@ -1,0 +1,6 @@
+flowchart TD
+    start([Start: pull-request number]) --> fetch[Read PR metadata and patch through GitHub CLI]
+    fetch --> review[Codex produces local structured review]
+    review --> acknowledgement{{Human acknowledgement}}
+    acknowledgement -->|Acknowledge| done([Review recorded locally])
+    acknowledgement -->|Dismiss| dismissed([Review dismissed locally])

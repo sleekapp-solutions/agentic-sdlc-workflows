@@ -1,0 +1,15 @@
+flowchart TD
+    start([Start: Jira ticket key]) --> ticket[Read ticket through Atlassian MCP]
+    ticket --> plan[Create a structured implementation plan]
+    plan --> planApproval{{Human plan approval}}
+    planApproval -->|Revise| plan
+    planApproval -->|Reject| stop([Stop])
+    planApproval -->|Approve| branch[Create or reuse agent/TICKET branch]
+    branch --> implement[Codex implements approved plan]
+    implement --> validate[Run configured validation]
+    validate -->|Failed| validationFailed([Stop: validation failure])
+    validate -->|No new files| noChanges([Stop: nothing to publish])
+    validate -->|Passed| publishApproval{{Human path + push approval}}
+    publishApproval -->|Reject| stop
+    publishApproval -->|Approve selected paths| publish[Commit, push, create draft PR]
+    publish --> done([Done])
