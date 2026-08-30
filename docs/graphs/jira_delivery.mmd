@@ -5,7 +5,7 @@ flowchart TD
     planApproval -->|Revise| plan
     planApproval -->|Reject| stop([Stop])
     planApproval -->|Approve| branch[Create or reuse agent/TICKET branch]
-    branch --> implement[Codex implements approved plan]
+    branch --> implement[Selected local agent implements approved plan]
     implement --> validate[Run configured validation]
     validate -->|Failed| validationFailed([Stop: validation failure])
     validate -->|No new files| noChanges([Stop: nothing to publish])

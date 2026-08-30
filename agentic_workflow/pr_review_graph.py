@@ -6,7 +6,7 @@ from typing import Dict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from .adapters import CodexPullRequestReviewer, GitHubCliPullRequestClient
+from .adapters import GitHubCliPullRequestClient, LocalPullRequestReviewer
 from .contracts import WorkflowState
 
 
@@ -30,8 +30,8 @@ def build_pr_review_graph(repo_root: Path, pull_request_client=None, reviewer=No
         return {"pull_request": client.fetch(number), "pull_request_diff": client.diff(number), "status": "reviewing_pull_request"}
 
     def review_pull_request(state: WorkflowState):
-        progress("reviewing_pull_request", "Analyzing the pull request locally with Codex")
-        active_reviewer = reviewer or CodexPullRequestReviewer(repo_root)
+        progress("reviewing_pull_request", "Analyzing the pull request with the selected local provider")
+        active_reviewer = reviewer or LocalPullRequestReviewer(repo_root)
         return {"review": active_reviewer.review(state["pull_request"], state["pull_request_diff"])}
 
     def review_result(state: WorkflowState):

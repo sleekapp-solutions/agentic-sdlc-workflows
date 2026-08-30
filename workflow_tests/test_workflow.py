@@ -7,7 +7,15 @@ from langgraph.types import Command
 
 from agentic_workflow.graph import build_graph
 from agentic_workflow.git_ops import GitOperations, ProjectValidator
-from agentic_workflow.adapters import CodexMcpTicketClient, _codex_options, codex_workflow_configuration, use_codex_workflow_configuration
+from agentic_workflow.adapters import (
+    CodexMcpTicketClient,
+    CopilotJsonAgent,
+    _copilot_options,
+    _codex_options,
+    agent_workflow_configuration,
+    codex_workflow_configuration,
+    use_codex_workflow_configuration,
+)
 from agentic_workflow.local_ui import LocalUiApplication, WorkflowRuntime, explain_failure
 from agentic_workflow.pr_review_graph import build_pr_review_graph
 
@@ -185,9 +193,10 @@ def test_local_reviewer_ui_serves_its_browser_interface():
     assert "Pull-request review" in body
     assert "Estimated payload tokens" in body
     assert "This is not a Jira-fetch failure" in body
-    assert "GPT-5.6 Terra · balanced" in body
-    assert "Codex model" in body
-    assert "Current local defaults" in body
+    assert "GitHub Copilot CLI" in body
+    assert "Agent provider" in body
+    assert "Model override" in body
+    assert "Loading local agent defaults" in body
     assert "Reasoning effort" in body
 
 
@@ -242,8 +251,9 @@ def test_atlassian_ticket_schema_requires_a_nonempty_summary(tmp_path):
 
 
 def test_ui_model_choice_is_scoped_to_one_workflow_run(tmp_path):
-    configuration = WorkflowRuntime._model_configuration("gpt-5.6-terra", "medium")
+    configuration = WorkflowRuntime._model_configuration("codex", "gpt-5.6-terra", "medium")
 
+    assert configuration["provider"] == "codex"
     assert configuration["model_source"] == "UI selection"
     assert configuration["reasoning_effort_source"] == "UI selection"
     with use_codex_workflow_configuration(configuration):
@@ -257,11 +267,55 @@ def test_ui_model_choice_is_scoped_to_one_workflow_run(tmp_path):
 
 def test_fast_model_rejects_unsupported_none_effort():
     try:
-        WorkflowRuntime._model_configuration("gpt-5.6-luna", "none")
+        WorkflowRuntime._model_configuration("codex", "gpt-5.6-luna", "none")
     except ValueError as error:
         assert "requires low or higher" in str(error)
     else:
         raise AssertionError("Expected incompatible model/effort selection to fail")
+
+
+def test_copilot_provider_uses_its_configured_model_without_codex_flags(tmp_path, monkeypatch):
+    (tmp_path / "settings.json").write_text('{"model":"gpt-5.3-codex","effortLevel":"low"}')
+    monkeypatch.setenv("COPILOT_HOME", str(tmp_path))
+    configuration = agent_workflow_configuration(provider="copilot")
+
+    assert configuration["provider_label"] == "GitHub Copilot CLI"
+    assert configuration["model"] == "gpt-5.3-codex"
+    with use_codex_workflow_configuration(configuration):
+        assert _copilot_options() == ["--model=gpt-5.3-codex"]
+
+
+def test_copilot_json_agent_grants_only_the_configured_ticket_mcp(monkeypatch, tmp_path):
+    commands = []
+
+    class Result:
+        returncode = 0
+        stdout = '{"key":"MGA-38"}'
+        stderr = ""
+
+    def run(command, **kwargs):
+        commands.append(command)
+        return Result()
+
+    monkeypatch.setattr("agentic_workflow.adapters.subprocess.run", run)
+    monkeypatch.setenv("WORKFLOW_COPILOT_TICKET_MCP_SERVER", "atlassian")
+    response = CopilotJsonAgent(tmp_path).run("Fetch the ticket", {"type": "object"}, allow_ticket_mcp=True)
+
+    assert response == {"key": "MGA-38"}
+    assert "--allow-tool=atlassian" in commands[0]
+    assert "--no-ask-user" in commands[0]
+
+
+def test_ui_accepts_a_copilot_model_override_and_no_reasoning_override():
+    configuration = WorkflowRuntime._model_configuration("copilot", "gpt-5.3-codex", None)
+
+    assert configuration["provider"] == "copilot"
+    try:
+        WorkflowRuntime._model_configuration("copilot", None, "medium")
+    except ValueError as error:
+        assert "reads reasoning effort" in str(error)
+    else:
+        raise AssertionError("Expected Copilot UI reasoning override to be rejected")
 
 
 def test_validation_commands_can_be_configured_for_non_flutter_projects(monkeypatch, tmp_path):

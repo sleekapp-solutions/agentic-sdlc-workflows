@@ -4,7 +4,7 @@ from typing import Dict
 from langgraph.graph import END, START, StateGraph
 from langgraph.types import Command, interrupt
 
-from .adapters import CodexMcpTicketClient, CodexPlanner, CommandImplementer
+from .adapters import CommandImplementer, LocalMcpTicketClient, LocalPlanner
 from .contracts import WorkflowState
 from .git_ops import GitOperations, ProjectValidator
 
@@ -27,8 +27,8 @@ def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=N
             report(stage, message)
 
     def fetch_ticket(state: WorkflowState):
-        progress("fetching_ticket", "Fetching Jira ticket through Atlassian MCP")
-        client = ticket_client or CodexMcpTicketClient(repo_root)
+        progress("fetching_ticket", "Fetching Jira ticket through the selected provider's Atlassian MCP connection")
+        client = ticket_client or LocalMcpTicketClient(repo_root)
         ticket = client.fetch(state["ticket_key"])
         summary = ticket.get("summary") if isinstance(ticket, dict) else None
         if not isinstance(summary, str) or not summary.strip():
@@ -40,7 +40,7 @@ def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=N
 
     def make_plan(state: WorkflowState):
         progress("planning", "Creating the implementation plan")
-        active_planner = planner or CodexPlanner(repo_root)
+        active_planner = planner or LocalPlanner(repo_root)
         return {"plan": active_planner.create(state["ticket"], state.get("plan_feedback")), "plan_feedback": ""}
 
     def review_plan(state: WorkflowState):

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "agentic-sdlc-workflows"
 version = "0.1.0"
-description = "Human-approved Jira delivery and GitHub pull-request review workflows powered by local Codex"
+description = "Human-approved Jira delivery and GitHub pull-request review workflows powered by local agent CLIs"
 requires-python = ">=3.11"
 dependencies = [
   "langgraph>=1.0,<2.0",

@@ -19,6 +19,13 @@ _RUN_CODEX_CONFIGURATION: ContextVar[Dict[str, str] | None] = ContextVar(
     "run_codex_configuration", default=None
 )
 
+AGENT_PROVIDERS = {"codex", "copilot"}
+
+
+def _active_workflow_configuration() -> Dict[str, str]:
+    """Return this run's provider configuration without exposing credentials."""
+    return _RUN_CODEX_CONFIGURATION.get() or agent_workflow_configuration()
+
 
 class JiraRestClient(TicketClient):
     """Minimal Jira Cloud client; credentials never enter graph state."""
@@ -123,6 +130,20 @@ def _local_codex_settings() -> Dict[str, str]:
     }
 
 
+def _local_copilot_settings() -> Dict[str, str]:
+    """Read only non-sensitive GitHub Copilot CLI settings when they exist."""
+    copilot_home = Path(os.getenv("COPILOT_HOME", str(Path.home() / ".copilot")))
+    settings_path = copilot_home / "settings.json"
+    try:
+        settings = json.loads(settings_path.read_text())
+    except (FileNotFoundError, OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(settings, dict):
+        return {}
+    values = {"model": settings.get("model"), "effortLevel": settings.get("effortLevel")}
+    return {key: value for key, value in values.items() if isinstance(value, str) and value.strip()}
+
+
 def codex_workflow_configuration(
     model: Optional[str] = None,
     reasoning_effort: Optional[str] = None,
@@ -147,6 +168,36 @@ def codex_workflow_configuration(
     }
 
 
+def agent_workflow_configuration(
+    provider: Optional[str] = None,
+    model: Optional[str] = None,
+    reasoning_effort: Optional[str] = None,
+    source: str = "local configuration",
+) -> Dict[str, str]:
+    """Resolve one local CLI provider's non-sensitive run configuration."""
+    active = _RUN_CODEX_CONFIGURATION.get()
+    if active is not None and provider is None and model is None and reasoning_effort is None:
+        return active
+
+    resolved_provider = (provider or os.getenv("WORKFLOW_AGENT_PROVIDER", "codex")).strip().lower()
+    if resolved_provider not in AGENT_PROVIDERS:
+        raise ValueError("WORKFLOW_AGENT_PROVIDER must be either 'codex' or 'copilot'")
+    if resolved_provider == "codex":
+        return {"provider": "codex", "provider_label": "Codex CLI", **codex_workflow_configuration(model, reasoning_effort, source)}
+
+    local_settings = _local_copilot_settings()
+    configured_model = model or os.getenv("WORKFLOW_COPILOT_MODEL") or local_settings.get("model")
+    configured_effort = reasoning_effort or os.getenv("WORKFLOW_COPILOT_REASONING_EFFORT") or local_settings.get("effortLevel")
+    return {
+        "provider": "copilot",
+        "provider_label": "GitHub Copilot CLI",
+        "model": configured_model or "Copilot automatic default",
+        "model_source": source if model else ("WORKFLOW_COPILOT_MODEL" if os.getenv("WORKFLOW_COPILOT_MODEL") else ("COPILOT_HOME/settings.json" if local_settings.get("model") else "Copilot runtime")),
+        "reasoning_effort": configured_effort or "Copilot automatic default",
+        "reasoning_effort_source": source if reasoning_effort else ("WORKFLOW_COPILOT_REASONING_EFFORT" if os.getenv("WORKFLOW_COPILOT_REASONING_EFFORT") else ("COPILOT_HOME/settings.json" if local_settings.get("effortLevel") else "Copilot runtime")),
+    }
+
+
 @contextmanager
 def use_codex_workflow_configuration(configuration: Dict[str, str]):
     """Scope a UI-selected model to one workflow thread without mutating os.environ."""
@@ -157,6 +208,9 @@ def use_codex_workflow_configuration(configuration: Dict[str, str]):
         _RUN_CODEX_CONFIGURATION.reset(token)
 
 
+use_workflow_configuration = use_codex_workflow_configuration
+
+
 def _codex_options() -> list[str]:
     """Apply explicit workflow overrides when configured by the local operator."""
     configuration = codex_workflow_configuration()
@@ -165,6 +219,15 @@ def _codex_options() -> list[str]:
         options.extend(["--model", configuration["model"]])
     if configuration["reasoning_effort"] != "Codex automatic default":
         options.extend(["--config", f'model_reasoning_effort="{configuration["reasoning_effort"]}"'])
+    return options
+
+
+def _copilot_options() -> list[str]:
+    """Apply only flags supported by Copilot CLI's programmatic interface."""
+    configuration = _active_workflow_configuration()
+    options: list[str] = []
+    if configuration["model"] != "Copilot automatic default":
+        options.append(f"--model={configuration['model']}")
     return options
 
 
@@ -209,6 +272,62 @@ class CodexJsonAgent:
                 raise RuntimeError("Local Codex did not return valid structured data") from error
 
 
+def _parse_json_agent_response(raw: str, provider: str) -> Dict[str, Any]:
+    """Accept JSON responses with or without a Markdown code fence."""
+    cleaned = raw.strip()
+    if cleaned.startswith("```"):
+        cleaned = cleaned.split("\n", 1)[-1]
+        if cleaned.rstrip().endswith("```"):
+            cleaned = cleaned.rstrip()[:-3].rstrip()
+    try:
+        value = json.loads(cleaned)
+    except json.JSONDecodeError as error:
+        raise RuntimeError(f"Local {provider} did not return valid structured data") from error
+    if not isinstance(value, dict):
+        raise RuntimeError(f"Local {provider} did not return a JSON object")
+    return value
+
+
+class CopilotJsonAgent:
+    """Runs GitHub Copilot CLI programmatically for structured work."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def run(self, prompt: str, schema: Dict[str, Any], *, allow_ticket_mcp: bool = False) -> Dict[str, Any]:
+        schema_instruction = (
+            "Return only a JSON object that conforms to this JSON Schema. Do not wrap it in Markdown.\n"
+            + json.dumps(schema)
+        )
+        command = ["copilot", "-s", "-p", f"{prompt}\n\n{schema_instruction}", "--no-ask-user", *_copilot_options()]
+        if allow_ticket_mcp:
+            mcp_server = os.getenv("WORKFLOW_COPILOT_TICKET_MCP_SERVER", "atlassian").strip()
+            if not mcp_server:
+                raise RuntimeError("WORKFLOW_COPILOT_TICKET_MCP_SERVER must name the configured Jira MCP server")
+            command.append(f"--allow-tool={mcp_server}")
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.repo_root,
+                text=True,
+                capture_output=True,
+                timeout=10 * 60,
+                env=_codex_environment(),
+                check=False,
+            )
+        except FileNotFoundError as error:
+            raise RuntimeError("GitHub Copilot CLI was not found. Install it and run `copilot login` before retrying.") from error
+        if result.returncode:
+            raise RuntimeError(f"GitHub Copilot CLI request failed: {result.stderr[-1000:]}")
+        return _parse_json_agent_response(result.stdout, "GitHub Copilot CLI")
+
+
+def _structured_agent(repo_root: Path):
+    """Choose the local structured-output provider for this workflow run."""
+    provider = _active_workflow_configuration().get("provider", "codex")
+    return CopilotJsonAgent(repo_root) if provider == "copilot" else CodexJsonAgent(repo_root)
+
+
 class CodexMcpTicketClient(TicketClient):
     """Fetches Jira through the user's configured Atlassian MCP connection."""
 
@@ -237,6 +356,36 @@ class CodexMcpTicketClient(TicketClient):
             ),
             schema,
         )
+
+
+class LocalMcpTicketClient(CodexMcpTicketClient):
+    """Fetches Jira through the selected local CLI provider's configured MCP tools."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.agent = _structured_agent(repo_root)
+
+    def fetch(self, ticket_key: str) -> Dict[str, Any]:
+        schema = {
+            "type": "object",
+            "additionalProperties": False,
+            "required": ["key", "summary", "description", "issue_type", "url"],
+            "properties": {
+                "key": {"type": "string", "minLength": 1},
+                "summary": {"type": "string", "minLength": 1},
+                "description": {"type": "string"},
+                "issue_type": {"type": "string", "minLength": 1},
+                "url": {"type": "string", "minLength": 1},
+            },
+        }
+        prompt = (
+            f"Use only the configured Atlassian MCP tool to retrieve Jira ticket {ticket_key}. "
+            "Read the issue's actual Jira Summary field and place that exact non-empty value in "
+            "`summary`; never use a blank placeholder or infer it from the description. "
+            "Do not edit files or call any write tool."
+        )
+        if isinstance(self.agent, CopilotJsonAgent):
+            return self.agent.run(prompt, schema, allow_ticket_mcp=True)
+        return self.agent.run(prompt + " Return the requested JSON exactly.", schema)
 
 
 class CodexPlanner(Planner):
@@ -268,6 +417,13 @@ class CodexPlanner(Planner):
             ),
             schema,
         )
+
+
+class LocalPlanner(CodexPlanner):
+    """Generates plans with the local provider selected for the current run."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.agent = _structured_agent(repo_root)
 
 
 class GitHubCliPullRequestClient(PullRequestClient):
@@ -330,6 +486,13 @@ class CodexPullRequestReviewer(PullRequestReviewer):
         )
 
 
+class LocalPullRequestReviewer(CodexPullRequestReviewer):
+    """Reviews a PR using the selected local CLI provider without posting comments."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.agent = _structured_agent(repo_root)
+
+
 class CommandImplementer(Implementer):
     """Runs a separately configured coding agent after plan approval only."""
 
@@ -339,7 +502,12 @@ class CommandImplementer(Implementer):
 
     @classmethod
     def from_environment(cls, repo_root: Path) -> "CommandImplementer":
-        command = os.getenv("IMPLEMENTATION_COMMAND", "codex exec --sandbox workspace-write -")
+        command = os.getenv("IMPLEMENTATION_COMMAND")
+        if command:
+            return cls(command, repo_root)
+        if _active_workflow_configuration().get("provider") == "copilot":
+            return CopilotImplementer(repo_root)
+        command = "codex exec --sandbox workspace-write -"
         return cls(command, repo_root)
 
     def run(self, ticket: Dict[str, Any], plan: Dict[str, Any], branch: str) -> Dict[str, Any]:
@@ -373,4 +541,50 @@ class CommandImplementer(Implementer):
         )
         if result.returncode:
             raise RuntimeError(f"Implementation command failed ({result.returncode}): {result.stderr[-2000:]}")
+        return {"command": command, "stdout": result.stdout[-6000:], "stderr": result.stderr[-2000:]}
+
+
+class CopilotImplementer(Implementer):
+    """Uses Copilot CLI with only repository write and shell permissions."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    def run(self, ticket: Dict[str, Any], plan: Dict[str, Any], branch: str) -> Dict[str, Any]:
+        payload = json.dumps(
+            {
+                "ticket": ticket,
+                "plan": plan,
+                "branch": branch,
+                "safety_rules": [
+                    "Implement only the approved plan.",
+                    "Do not commit, push, create pull requests, alter remotes, or read secrets.",
+                    "Run relevant local tests and report commands/results.",
+                ],
+            }
+        )
+        prompt = (
+            "Act as the implementation agent for this local repository. Follow the approved request below. "
+            "You may edit repository files and run local commands, but never commit, push, create pull requests, "
+            "alter remotes, or read secrets. Return a concise report of edits and test results.\n\n"
+            + payload
+        )
+        command = [
+            "copilot", "-s", "-p", prompt, "--no-ask-user",
+            "--allow-tool=write,shell", *_copilot_options(),
+        ]
+        try:
+            result = subprocess.run(
+                command,
+                cwd=self.repo_root,
+                text=True,
+                capture_output=True,
+                timeout=60 * 60,
+                env={**_codex_environment(), "AGENTIC_WORKFLOW_NO_PUSH": "1"},
+                check=False,
+            )
+        except FileNotFoundError as error:
+            raise RuntimeError("GitHub Copilot CLI was not found. Install it and run `copilot login` before retrying.") from error
+        if result.returncode:
+            raise RuntimeError(f"GitHub Copilot CLI implementation failed ({result.returncode}): {result.stderr[-2000:]}")
         return {"command": command, "stdout": result.stdout[-6000:], "stderr": result.stderr[-2000:]}
