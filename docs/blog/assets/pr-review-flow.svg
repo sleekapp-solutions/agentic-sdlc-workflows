@@ -1,0 +1,50 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="900" viewBox="0 0 1600 900" role="img" aria-labelledby="title desc">
+  <title id="title">PR review workflow automation</title>
+  <desc id="desc">A predefined SDLC workflow from pull request number to structured review report.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F8F3E8"/><stop offset="1" stop-color="#E9F0E6"/></linearGradient>
+    <linearGradient id="accent" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#497963"/><stop offset="1" stop-color="#315C67"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#263B3B" flood-opacity=".14"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12Z" fill="#637A70"/></marker>
+    <style>
+      .eyebrow { font: 700 24px Arial, sans-serif; letter-spacing: 3px; fill: #497963; }
+      .title { font: 700 62px Georgia, serif; fill: #243B4A; }
+      .subtitle { font: 400 27px Arial, sans-serif; fill: #55645D; }
+      .step { font: 700 26px Arial, sans-serif; fill: #233A37; }
+      .small { font: 400 20px Arial, sans-serif; fill: #627169; }
+      .number { font: 700 22px Arial, sans-serif; fill: white; }
+      .label { font: 700 20px Arial, sans-serif; fill: #497963; letter-spacing: 1.4px; }
+    </style>
+  </defs>
+  <rect width="1600" height="900" rx="42" fill="url(#canvas)"/>
+  <path d="M65 158 C180 82 290 220 407 127 S650 191 745 92" fill="none" stroke="#D8B77B" stroke-width="4" stroke-linecap="round" stroke-dasharray="14 16" opacity=".65"/>
+  <path d="M930 782 C1058 684 1132 850 1267 745 S1475 801 1552 686" fill="none" stroke="#D8B77B" stroke-width="4" stroke-linecap="round" stroke-dasharray="14 16" opacity=".65"/>
+  <text x="800" y="118" text-anchor="middle" class="eyebrow">LEVEL 1 · SDLC WORKFLOW AUTOMATION</text>
+  <text x="800" y="190" text-anchor="middle" class="title">PR review flow</text>
+  <text x="800" y="238" text-anchor="middle" class="subtitle">The workflow owns the route; the agent contributes to a known review process.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="88" y="420" width="250" height="176" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="380" y="420" width="250" height="176" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="672" y="420" width="250" height="176" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="964" y="420" width="250" height="176" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="1256" y="420" width="256" height="176" rx="30" fill="url(#accent)"/>
+  </g>
+  <g fill="none" stroke="#637A70" stroke-width="6" marker-end="url(#arrow)">
+    <path d="M340 508 H360"/><path d="M632 508 H652"/><path d="M924 508 H944"/><path d="M1216 508 H1236"/>
+  </g>
+  <g>
+    <circle cx="130" cy="456" r="24" fill="#497963"/><text x="130" y="464" text-anchor="middle" class="number">1</text>
+    <text x="213" y="494" text-anchor="middle" class="step">PR number</text><text x="213" y="530" text-anchor="middle" class="small">Known input</text>
+    <circle cx="422" cy="456" r="24" fill="#497963"/><text x="422" y="464" text-anchor="middle" class="number">2</text>
+    <text x="505" y="487" text-anchor="middle" class="step">Fetch diff &amp;</text><text x="505" y="519" text-anchor="middle" class="step">metadata</text><text x="505" y="553" text-anchor="middle" class="small">Git provider + MCP</text>
+    <circle cx="714" cy="456" r="24" fill="#497963"/><text x="714" y="464" text-anchor="middle" class="number">3</text>
+    <text x="797" y="487" text-anchor="middle" class="step">Run review</text><text x="797" y="519" text-anchor="middle" class="step">checks</text><text x="797" y="553" text-anchor="middle" class="small">Tests · lint · CI</text>
+    <circle cx="1006" cy="456" r="24" fill="#497963"/><text x="1006" y="464" text-anchor="middle" class="number">4</text>
+    <text x="1089" y="487" text-anchor="middle" class="step">Coding-agent</text><text x="1089" y="519" text-anchor="middle" class="step">review</text><text x="1089" y="553" text-anchor="middle" class="small">Evidence-based findings</text>
+    <circle cx="1298" cy="456" r="24" fill="#EACB83"/><text x="1298" y="464" text-anchor="middle" class="number">5</text>
+    <text x="1384" y="495" text-anchor="middle" style="font:700 26px Arial,sans-serif;fill:white">Structured</text><text x="1384" y="528" text-anchor="middle" style="font:700 26px Arial,sans-serif;fill:white">review report</text><text x="1384" y="560" text-anchor="middle" style="font:400 19px Arial,sans-serif;fill:#E9F1E9">Findings + next steps</text>
+  </g>
+  <rect x="432" y="690" width="736" height="76" rx="38" fill="#E5EFE4" stroke="#A8BEA4" stroke-width="2"/>
+  <text x="800" y="738" text-anchor="middle" class="label">PREDEFINED ROUTE · REPEATABLE CONTROLS · CONSISTENT OUTPUT</text>
+</svg>

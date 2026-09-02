@@ -1,3 +1,12 @@
+"""Shared workflow state and dependency contracts.
+
+``WorkflowState`` is the durable data passed between LangGraph nodes.  The
+small abstract client classes define the ports used by the graphs, allowing
+real local adapters to be swapped for fakes in tests.  These contracts describe
+data and capabilities only; they do not perform network, agent, Git, or file
+operations themselves.
+"""
+
 from typing import Any, Dict, List, Optional, TypedDict
 
 

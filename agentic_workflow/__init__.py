@@ -1,5 +1,11 @@
-"""Human-approved Jira-to-GitHub delivery workflow built with LangGraph."""
-"""Local, human-approved agentic SDLC workflows."""
+"""Local, human-approved agentic SDLC workflows.
+
+This package contains the repository-specific application built on LangGraph.
+It exposes two flows: Jira delivery, which pauses before implementation and
+publication, and read-only pull-request review.  Provider credentials and MCP
+configuration remain outside package state; importing the package only loads
+local workflow configuration when it is present.
+"""
 
 from pathlib import Path
 

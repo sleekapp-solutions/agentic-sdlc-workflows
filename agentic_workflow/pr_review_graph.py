@@ -1,4 +1,11 @@
-"""Human-reviewed, read-only GitHub pull-request review workflow."""
+"""LangGraph definition for a human-reviewed, read-only PR review flow.
+
+The flow fetches pull-request metadata and its patch through GitHub CLI, asks
+the selected local agent for structured findings, and pauses for local human
+acknowledgement.  It never changes repository files, posts GitHub comments, or
+alters the pull request; publication of reviews is intentionally outside this
+current flow's authority.
+"""
 
 from pathlib import Path
 from typing import Dict
@@ -17,7 +24,12 @@ def _approval(value: object) -> Dict[str, object]:
 
 
 def build_pr_review_graph(repo_root: Path, pull_request_client=None, reviewer=None, report=None):
-    """Build a workflow that never changes code or posts review comments."""
+    """Build the read-only PR review graph for one explicit repository.
+
+    Optional dependencies are injection points for tests or alternative
+    integrations.  The default adapters use GitHub CLI for read-only retrieval
+    and the selected local agent provider for review analysis.
+    """
 
     def progress(stage: str, message: str) -> None:
         if report:

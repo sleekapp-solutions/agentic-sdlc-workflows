@@ -1,3 +1,12 @@
+"""Guarded Git, GitHub publication, and project-validation operations.
+
+The Jira delivery graph calls this module only after human approval.  It creates
+or reuses an agent branch, snapshots candidate changes, runs configured project
+validators, and commits, pushes, and opens a draft pull request only for paths
+explicitly approved by the user.  The module also rejects sensitive paths so
+local configuration and repository metadata cannot be accidentally published.
+"""
+
 import hashlib
 import os
 import re

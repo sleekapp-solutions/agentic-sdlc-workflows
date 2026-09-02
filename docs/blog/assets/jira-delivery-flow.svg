@@ -1,0 +1,54 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="960" viewBox="0 0 1600 960" role="img" aria-labelledby="title desc">
+  <title id="title">Jira delivery context-aware engineering flow</title>
+  <desc id="desc">A context-aware engineering workflow from Jira ticket through a human approval gate to implementation, validation, and a draft pull request.</desc>
+  <defs>
+    <linearGradient id="canvas" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#F7F0E4"/><stop offset="1" stop-color="#E6EFF0"/></linearGradient>
+    <linearGradient id="brain" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#355D70"/><stop offset="1" stop-color="#244352"/></linearGradient>
+    <linearGradient id="action" x1="0" y1="0" x2="1" y2="1"><stop stop-color="#507B61"/><stop offset="1" stop-color="#355B46"/></linearGradient>
+    <filter id="shadow" x="-20%" y="-30%" width="140%" height="170%"><feDropShadow dx="0" dy="12" stdDeviation="14" flood-color="#263B3B" flood-opacity=".14"/></filter>
+    <marker id="arrow" markerWidth="12" markerHeight="12" refX="9" refY="6" orient="auto"><path d="M0,0 L12,6 L0,12Z" fill="#637A70"/></marker>
+    <style>
+      .eyebrow { font: 700 24px Arial, sans-serif; letter-spacing: 3px; fill: #315C67; }
+      .title { font: 700 62px Georgia, serif; fill: #243B4A; }
+      .subtitle { font: 400 27px Arial, sans-serif; fill: #55645D; }
+      .step { font: 700 25px Arial, sans-serif; fill: #233A37; }
+      .small { font: 400 19px Arial, sans-serif; fill: #627169; }
+      .number { font: 700 22px Arial, sans-serif; fill: white; }
+      .label { font: 700 20px Arial, sans-serif; fill: #315C67; letter-spacing: 1.4px; }
+    </style>
+  </defs>
+  <rect width="1600" height="960" rx="42" fill="url(#canvas)"/>
+  <path d="M55 148 C190 54 298 204 406 116 S645 184 734 75" fill="none" stroke="#D8B77B" stroke-width="4" stroke-linecap="round" stroke-dasharray="14 16" opacity=".65"/>
+  <path d="M936 843 C1044 739 1144 908 1264 799 S1471 862 1560 756" fill="none" stroke="#D8B77B" stroke-width="4" stroke-linecap="round" stroke-dasharray="14 16" opacity=".65"/>
+  <text x="800" y="108" text-anchor="middle" class="eyebrow">LEVEL 2 · CONTEXT-AWARE ENGINEERING</text>
+  <text x="800" y="180" text-anchor="middle" class="title">Jira delivery flow</text>
+  <text x="800" y="228" text-anchor="middle" class="subtitle">The agent interprets the work in repository context before it is allowed to change code.</text>
+
+  <g filter="url(#shadow)">
+    <rect x="100" y="374" width="290" height="170" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="472" y="374" width="290" height="170" rx="30" fill="url(#brain)"/>
+    <rect x="844" y="374" width="290" height="170" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+    <rect x="1216" y="374" width="290" height="170" rx="30" fill="url(#action)"/>
+    <rect x="844" y="680" width="662" height="154" rx="30" fill="#FFFDF8" stroke="#D5B77D" stroke-width="3"/>
+  </g>
+  <g fill="none" stroke="#637A70" stroke-width="6" marker-end="url(#arrow)">
+    <path d="M392 459 H450"/><path d="M764 459 H822"/><path d="M1136 459 H1194"/>
+    <path d="M1361 546 V642 H1175 V658"/>
+  </g>
+  <path d="M989 548 V606 H618 V548" fill="none" stroke="#C87958" stroke-width="5" stroke-linecap="round" stroke-dasharray="12 13" marker-end="url(#arrow)"/>
+  <text x="804" y="624" text-anchor="middle" style="font:700 17px Arial,sans-serif;fill:#AA654A;letter-spacing:1px">REVISE PLAN</text>
+  <g>
+    <circle cx="144" cy="412" r="24" fill="#497963"/><text x="144" y="420" text-anchor="middle" class="number">1</text>
+    <text x="245" y="454" text-anchor="middle" class="step">Jira ticket</text><text x="245" y="490" text-anchor="middle" class="small">Goal + acceptance criteria</text>
+    <circle cx="516" cy="412" r="24" fill="#EACB83"/><text x="516" y="420" text-anchor="middle" class="number">2</text>
+    <text x="617" y="447" text-anchor="middle" style="font:700 25px Arial,sans-serif;fill:white">Inspect repository</text><text x="617" y="479" text-anchor="middle" style="font:700 25px Arial,sans-serif;fill:white">context &amp; plan</text><text x="617" y="512" text-anchor="middle" style="font:400 18px Arial,sans-serif;fill:#DDEAEA">Code · tests · conventions</text>
+    <circle cx="888" cy="412" r="24" fill="#315C67"/><text x="888" y="420" text-anchor="middle" class="number">3</text>
+    <text x="989" y="447" text-anchor="middle" class="step">Human approval</text><text x="989" y="479" text-anchor="middle" class="step">gate</text><text x="989" y="512" text-anchor="middle" class="small">Scope and plan are reviewed</text>
+    <circle cx="1260" cy="412" r="24" fill="#EACB83"/><text x="1260" y="420" text-anchor="middle" class="number">4</text>
+    <text x="1361" y="447" text-anchor="middle" style="font:700 25px Arial,sans-serif;fill:white">Implement with</text><text x="1361" y="479" text-anchor="middle" style="font:700 25px Arial,sans-serif;fill:white">coding agent</text><text x="1361" y="512" text-anchor="middle" style="font:400 18px Arial,sans-serif;fill:#E9F1E9">Approved boundaries only</text>
+    <circle cx="888" cy="718" r="24" fill="#497963"/><text x="888" y="726" text-anchor="middle" class="number">5</text>
+    <text x="1175" y="740" text-anchor="middle" class="step">Validate, report, and create a draft PR</text><text x="1175" y="776" text-anchor="middle" class="small">Relevant tests · static analysis · CI · reviewable result</text>
+  </g>
+  <rect x="344" y="875" width="912" height="58" rx="29" fill="#E1ECEB" stroke="#A6C0C0" stroke-width="2"/>
+  <text x="800" y="913" text-anchor="middle" class="label">CONTEXT-BASED DECISIONS · EXPLICIT AUTHORITY · VALIDATED DELIVERY</text>
+</svg>

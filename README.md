@@ -54,29 +54,31 @@ flowchart TD
 
 The editable source is [docs/graphs/pr_review.mmd](docs/graphs/pr_review.mmd).
 
-## How LangGraph is used
+## What is LangGraph?
 
-LangGraph is the workflow runtime, not an external service that must be
-installed separately on the machine. It defines the resumable graph nodes,
-human-approval interrupts, and state transitions for both flows. SQLite
-checkpoints preserve a paused run so it can be resumed after a plan or
-publication decision.
+[LangGraph](https://www.langchain.com/langgraph) is an open-source agent
+orchestration framework/runtime from LangChain. It is **not** part of Python's
+standard library and it is not a hosted service required to run this project.
+It is an external Python package installed into this project's virtual
+environment.
 
-Installing this project's Python dependencies installs the LangGraph runtime:
+This project imports LangGraph's `StateGraph` to define the nodes, transitions,
+and approval interrupts for each flow. LangGraph persists the state of a
+paused run through SQLite checkpoints, so a plan or publication decision can
+resume the same workflow rather than restart it.
 
-```bash
-.venv/bin/pip install -e '.[dev]'
+```text
+Python                 → programming language
+LangGraph package      → workflow/orchestration framework installed with pip
+agentic_workflow/jira_delivery.py and pr_review_graph.py
+                       → this project's specific Jira delivery and PR-review graphs
 ```
 
-That command installs:
-
-- `langgraph` and `langgraph-checkpoint-sqlite` for the local CLI and browser
-  UI; and
-- the `langgraph-cli`, `langgraph-api`, and `langgraph-runtime-inmem` development
-  extras needed only when using `langgraph dev` / LangGraph Studio.
-
-Use the standard install when you need the local UI or terminal workflow. Use
-the `dev` extra shown above when you also want Studio and the test tooling.
+The runtime dependencies in `pyproject.toml` install `langgraph` and
+`langgraph-checkpoint-sqlite` for the local UI and terminal workflows. The
+optional `dev` extra adds `langgraph-cli`, `langgraph-api`, and
+`langgraph-runtime-inmem` for LangGraph Studio (`langgraph dev`) and the test
+tooling.
 
 ## Prerequisites
 
@@ -106,12 +108,25 @@ for the underlying tool model.
 
 ## Install
 
+Create a project-local virtual environment, then choose the install level you
+need. Nothing is installed globally.
+
 ```bash
 git clone <your-repository-url> agentic-sdlc-workflows
 cd agentic-sdlc-workflows
 python3 -m venv .venv
+.venv/bin/python -m pip install --upgrade pip
+
+# Local browser UI and terminal workflows, including LangGraph runtime.
+.venv/bin/pip install -e .
+
+# Optional: LangGraph Studio (`langgraph dev`) plus tests.
 .venv/bin/pip install -e '.[dev]'
 ```
+
+Use either the runtime install or the `dev` install; the latter includes the
+runtime dependencies as well. You do not need a separate global LangGraph
+installation.
 
 Confirm the local integrations before the first real run:
 
@@ -209,6 +224,13 @@ flutter analyze; flutter test
 Open `http://127.0.0.1:8080`. The UI is loopback-only. It lets you select the
 flow, choose Codex CLI or GitHub Copilot CLI, optionally override the model,
 and inspect the resolved local defaults before starting.
+
+The **Local environment** panel shows the target repository and sanitized
+`origin`, GitHub CLI authentication state, selected-provider installation,
+configured MCP server names, and whether the expected Jira MCP is configured.
+It never displays tokens, credentials, or MCP configuration values. MCP status
+means local configuration was found; a real Jira permission/connectivity check
+still occurs only when a delivery run starts.
 
 The Jira delivery flow pauses for plan approval and for the selected paths to
 be committed/pushed. The pull-request review flow never writes to GitHub.

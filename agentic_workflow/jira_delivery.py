@@ -1,3 +1,12 @@
+"""LangGraph definition for the human-approved Jira-to-draft-PR flow.
+
+The graph turns a Jira issue into a structured plan, pauses for plan approval,
+lets the selected local agent implement only the approved work, validates the
+repository, and pauses again before any commit, push, or draft PR.  This module
+defines the state transitions and approval boundaries; concrete Jira, agent,
+Git, and validation integrations are injected or resolved through adapters.
+"""
+
 from pathlib import Path
 from typing import Dict
 
@@ -16,6 +25,12 @@ def _approval(value: object, phase: str) -> Dict[str, object]:
 
 
 def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=None, git=None, validator=None, report=None):
+    """Build the Jira delivery graph for one explicit target repository.
+
+    Optional dependencies support deterministic tests and custom integrations.
+    With no overrides, nodes lazily resolve the local MCP, agent, Git, and
+    validator adapters only when that stage is reached.
+    """
     # Keep external credentials out of module import/startup. Studio can then
     # render the graph before a developer configures a real Jira/LLM session.
     # Each dependency is resolved only in the node that needs it.

@@ -1,11 +1,12 @@
 from pathlib import Path
 from io import BytesIO
+import json
 import time
 
 from langgraph.checkpoint.memory import InMemorySaver
 from langgraph.types import Command
 
-from agentic_workflow.graph import build_graph
+from agentic_workflow.jira_delivery import build_graph
 from agentic_workflow.git_ops import GitOperations, ProjectValidator
 from agentic_workflow.adapters import (
     CodexMcpTicketClient,
@@ -13,6 +14,7 @@ from agentic_workflow.adapters import (
     _copilot_options,
     _codex_options,
     agent_workflow_configuration,
+    configured_mcp_servers,
     codex_workflow_configuration,
     use_codex_workflow_configuration,
 )
@@ -304,6 +306,57 @@ def test_copilot_json_agent_grants_only_the_configured_ticket_mcp(monkeypatch, t
     assert response == {"key": "MGA-38"}
     assert "--allow-tool=atlassian" in commands[0]
     assert "--no-ask-user" in commands[0]
+
+
+def test_environment_mcp_listing_exposes_server_names_without_configuration_values(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex"
+    codex_home.mkdir()
+    (codex_home / "config.toml").write_text('[mcp_servers.atlassian]\nurl = "https://secret.example"\n')
+    copilot_home = tmp_path / "copilot"
+    copilot_home.mkdir()
+    (copilot_home / "mcp-config.json").write_text('{"mcpServers":{"linear":{"url":"https://secret.example"}}}')
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+
+    assert configured_mcp_servers("codex") == ["atlassian"]
+    assert configured_mcp_servers("copilot") == ["github-mcp-server (built-in)", "linear"]
+
+
+def test_environment_endpoint_reports_repo_and_non_sensitive_integration_state(tmp_path, monkeypatch):
+    import agentic_workflow.local_ui as local_ui
+
+    monkeypatch.setattr(local_ui, "_sanitized_origin", lambda repo: "https://github.com/example/repo.git")
+    monkeypatch.setattr(local_ui, "_github_cli_status", lambda: {"available": True, "authenticated": True})
+    monkeypatch.setattr(local_ui, "_provider_environment", lambda provider: {
+        "label": provider, "installed": True, "configured_mcps": ["atlassian"],
+        "expected_jira_mcp": "atlassian", "jira_mcp_configured": True,
+    })
+    app = LocalUiApplication(WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite"))
+    response = {}
+
+    def start_response(status, headers):
+        response["status"] = status
+
+    body = b"".join(app({"REQUEST_METHOD": "GET", "PATH_INFO": "/api/environment", "wsgi.input": BytesIO()}, start_response))
+    payload = json.loads(body)
+
+    assert response["status"] == "200 OK"
+    assert payload["repository"]["origin"] == "https://github.com/example/repo.git"
+    assert payload["providers"]["codex"]["configured_mcps"] == ["atlassian"]
+
+
+def test_provider_environment_reports_presence_without_reading_mcp_values(monkeypatch):
+    import agentic_workflow.local_ui as local_ui
+
+    monkeypatch.setenv("WORKFLOW_COPILOT_TICKET_MCP_SERVER", "atlassian")
+    monkeypatch.setattr(local_ui, "configured_mcp_servers", lambda provider: ["atlassian"])
+    monkeypatch.setattr(local_ui.shutil, "which", lambda command: "/usr/local/bin/" + command)
+
+    status = local_ui._provider_environment("copilot")
+
+    assert status["installed"] is True
+    assert status["configured_mcps"] == ["atlassian"]
+    assert status["jira_mcp_configured"] is True
 
 
 def test_ui_accepts_a_copilot_model_override_and_no_reasoning_override():

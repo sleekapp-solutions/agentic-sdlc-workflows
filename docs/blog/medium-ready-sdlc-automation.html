@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>When a Jira Ticket Meets an AI Agent</title>
+    <style>
+      :root { color: #242424; background: #fff; }
+      body { max-width: 760px; margin: 48px auto 96px; padding: 0 24px; font-family: Georgia, 'Times New Roman', serif; font-size: 21px; line-height: 1.62; }
+      h1, h2, h3 { color: #171717; line-height: 1.16; }
+      h1 { margin: 0 0 14px; font-size: 48px; letter-spacing: -0.025em; }
+      h2 { margin: 64px 0 16px; font-size: 32px; }
+      h3 { margin: 40px 0 12px; font-size: 26px; }
+      .subtitle { margin: 0 0 36px; color: #666; font-size: 25px; line-height: 1.35; }
+      .deck { margin: 30px 0; padding: 22px 26px; border-left: 4px solid #477963; background: #f5f8f4; font-size: 23px; }
+      blockquote { margin: 28px 0; padding-left: 24px; border-left: 3px solid #777; color: #444; font-size: 25px; font-style: italic; }
+      pre.flow { overflow-x: auto; margin: 30px 0; padding: 24px; border-radius: 6px; background: #f5f7f5; border: 1px solid #dce6dc; color: #253f3d; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 16px; line-height: 1.65; white-space: pre; }
+      .note { margin: 30px 0; padding: 18px 22px; border-radius: 5px; background: #f5f5f5; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; font-size: 17px; line-height: 1.5; }
+      li { margin: 8px 0; }
+      strong { font-weight: 700; }
+      @media (max-width: 640px) { body { margin-top: 28px; font-size: 19px; } h1 { font-size: 39px; } h2 { font-size: 29px; } .subtitle { font-size: 22px; } pre.flow { font-size: 13px; } }
+    </style>
+  </head>
+  <body>
+    <article>
+      <h1>When a Jira Ticket Meets an AI Agent: Two Useful Levels of SDLC Automation</h1>
+      <p class="subtitle">Why a repeatable PR-review workflow and a context-aware delivery workflow are related—but not the same thing.</p>
+
+      <p class="deck">Most teams do not need a self-driving engineering department. They need a better way to get the boring, repeatable work done—and a safer way to give an AI agent enough context to be genuinely useful.</p>
+
+      <p>That distinction became clearer to me while building an AI-assisted SDLC workflow around two very ordinary engineering tasks: reviewing a pull request and turning a Jira ticket into a planned, validated delivery.</p>
+      <p>Both involve agents. Both touch Jira, GitHub, tests, and code. Both can look like “workflow automation” from a distance. But once you look at who decides the next step, they are doing very different jobs.</p>
+      <p>This is a story about the first two practical levels of AI-assisted engineering—not the distant promise of an agent that runs the whole department.</p>
+
+      <h2>First, the cast of characters</h2>
+      <p>An AI-assisted SDLC workflow is not one magical agent with access to everything. It is a small engineering system in which every piece has a job.</p>
+      <ul>
+        <li><strong>Jira</strong> holds the reason for the work: the problem, context, acceptance criteria, and history.</li>
+        <li><strong>GitHub</strong> holds the engineering evidence: branches, pull requests, diffs, reviews, and CI checks.</li>
+        <li><strong>A coding agent</strong>—such as Codex or GitHub Copilot CLI—can inspect code, reason about changes, and, when permitted, make edits.</li>
+        <li><strong>MCP integrations</strong> act like carefully scoped adapters. They let the agent ask Jira or GitHub for information without every workflow inventing its own fragile connection.</li>
+        <li><strong>A workflow engine</strong> keeps the run on track: it knows what stage is active, records results, pauses for approval, and decides what happens when a step fails.</li>
+        <li><strong>Tests, CI, policy, and people</strong> are the guardrails. An agent report is useful; evidence is what makes it trustworthy.</li>
+      </ul>
+      <p>That last part matters. The agent is a participant in the workflow, not the workflow itself. The workflow gives it context, limits, and a place to stop.</p>
+
+      <h2>Level 1: SDLC workflow automation</h2>
+      <p>Imagine a pull request lands in your repository. The team already knows what a sensible review involves: fetch the diff, inspect the changed files, run relevant checks, look for risks, and produce a clear report.</p>
+      <p>That route is known before the run starts. The AI can help with the review, but it does not need to decide what kind of work this is or invent the process from scratch.</p>
+      <pre class="mermaid">flowchart LR
+  P1["PR number"] --&gt; P2["Fetch diff &amp; metadata"]
+  P2 --&gt; P3["Run review checks"]
+  P3 --&gt; P4["Coding agent drafts review"]
+  P4 --&gt; P5{"Human reviewer decides"}
+  P5 -- Approve --&gt; P6["Publish approval &amp; summary"]
+  P5 -- Request changes --&gt; P7["Publish comments &amp; request changes"]
+  P5 -- Revise with feedback --&gt; P8["Agent revises draft review"]
+  P8 --&gt; P5
+</pre>
+      <p>This is <strong>SDLC workflow automation</strong>: a predefined route with a smart helper inside it. The workflow owns the route; the agent contributes analysis at the right moment, while a human retains the authority to publish the review.</p>
+      <p>The value is refreshingly practical. Every PR is checked the same way. No one forgets the test step because they were in a hurry. The result is structured instead of lost in a terminal scrollback. And the reviewer is not forced into a crude approve-or-reject choice: they can send targeted feedback back to the agent, refine the draft, then publish the final review.</p>
+      <p>Our PR-review flow belongs squarely here. It accepts a pull-request number and runs a known engineering-review sequence. That is not a lesser use of AI. It is often the best place to start because the success criteria are clear and the blast radius is small.</p>
+
+      <h2>Level 2: context-aware engineering</h2>
+      <p>Now swap the PR number for a Jira ticket.</p>
+      <p>A ticket usually describes an outcome, not a file-by-file plan. “Fix the theme typography.” “Make this card responsive.” “Correct the checkout error.” A human engineer would not immediately start typing. They would inspect the repository, trace the relevant code, read the tests, understand the existing conventions, and form a plan.</p>
+      <p>That is the jump from a workflow that follows a known route to a workflow that needs to interpret context before it can choose a safe route.</p>
+      <pre class="mermaid">flowchart LR
+  subgraph Jira["Jira delivery — context-aware engineering"]
+    J1["Jira ticket"] --&gt; J2["Inspect repository context"]
+    J2 --&gt; J3["Create implementation plan"]
+    J3 --&gt; J4{"Human approves?"}
+    J4 -- Yes --&gt; J5["Implement with coding agent"]
+    J5 --&gt; J6["Validate and create draft PR"]
+    J4 -- No / revise --&gt; J3
+  end
+</pre>
+      <p>This is <strong>context-aware engineering</strong>. The workflow still provides structure—fetch ticket, plan, approve, implement, validate—but the agent has to work out what “plan” means for this repository and this request.</p>
+      <p>It might discover that the obvious file is only a visual wrapper, that the real behavior lives in a shared theme, or that a test reveals a hidden compatibility rule. Context changes the right answer. That is precisely why the planning step should be visible and reviewable before the system changes code.</p>
+      <blockquote>Workflow automation says: “Here is the route.” Context-aware engineering says: “Here is the destination; inspect the map before you drive.”</blockquote>
+      <p>There is no contradiction between the two. The Jira delivery flow contains ordinary workflow automation around its context-aware core. It fetches data, runs tests, records output, and creates a draft PR using repeatable steps. What makes it different is the moment where the agent must understand the ticket and repository well enough to propose the right change.</p>
+
+      <h2>Where MCPs and agents make the difference</h2>
+      <p>An agent can only reason about the context it can safely reach. This is where MCP integrations become useful. Instead of pasting ticket text into a prompt or giving an agent a broad credential, an MCP server can expose a bounded capability: retrieve a Jira issue, search a repository, inspect a pull request, or read CI status.</p>
+      <p>Think of MCP as a shared plug shape for tools. The workflow chooses which connections are available; the agent uses them when they are relevant. That separation is important for both reuse and safety.</p>
+      <p>And the agent itself is not tied to a single vendor. A healthy workflow can support Codex today and Copilot CLI tomorrow through an adapter layer. The workflow should care about the job—plan, implement, review, validate—not whether the underlying command happens to come from one particular provider.</p>
+
+      <h2>So where do LangGraph, Stepwise, and Dagu fit?</h2>
+      <p>These tools overlap, but they are not interchangeable in spirit.</p>
+      <p><strong>LangGraph</strong> is the natural fit when the workflow needs stateful, code-first decision-making. It is useful for our ticket flow because we can model planning, approvals, conditional routes, and agent adapters in Python. It can also run the more deterministic PR-review workflow; using LangGraph does not automatically make a workflow “autonomous.”</p>
+      <p><strong>Stepwise</strong> is attractive when the team wants agent work to be very visible, resumable, and approval-driven. It leans into the operational experience around agents: a clear DAG, human gates, shared sessions, and run history.</p>
+      <p><strong>Dagu</strong> is strongest when we have known operational work to run reliably: scripts, tests, GitHub commands, scheduled checks, retries, and CI polling. It can be excellent rails around an agentic stage, but it does not replace the contextual reasoning that happens inside a planning flow.</p>
+      <p>The important choice is not which logo wins. It is whether the workflow needs more reasoning, more operational reliability, or more visibility and governance.</p>
+
+      <h2>Start where the risk is low and the learning is high</h2>
+      <p>A PR-review flow is a great first project: it is read-heavy, the route is known, and humans still own the final decision. A ticket-analysis flow is a sensible next step: let the agent inspect context and propose a plan, but keep a human approval gate before code changes begin.</p>
+      <p>That sequence gives a team something more valuable than a flashy demo: evidence. You learn which inputs the agent needs, which checks catch mistakes, where people want approval gates, and which workflows are mature enough to become reusable templates.</p>
+
+      <h2>And what about autonomous engineering?</h2>
+      <p>That is the next chapter, not the starting line.</p>
+      <p>Autonomy only becomes responsible after the basics are trustworthy: repeatable rails, good repository context, scoped tool access, tests, CI, clear policies, and useful escalation paths. Until then, “fully autonomous” is often just another way of saying “we have not decided where the guardrails belong.”</p>
+      <p>For now, the practical goal is simpler: make the predictable work easier, let agents reason where context truly matters, and keep the engineering team confidently in control.</p>
+
+      <aside class="note"><strong>Medium publishing note:</strong> Open this file in a browser, copy the article body into a new Medium draft, and let Medium apply its own typography. The Jira diagram is rendered locally from Mermaid code, not a generated image. Medium does not run Mermaid, so publish it as a PNG/SVG export or retain a text version.</aside>
+    </article>
+    <script type="module">
+      import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+      mermaid.initialize({ startOnLoad: true, theme: 'base', themeVariables: {
+        primaryColor: '#e5efe4', primaryBorderColor: '#497963', primaryTextColor: '#233a37',
+        secondaryColor: '#eef3ee', tertiaryColor: '#f7f0e4', lineColor: '#637a70',
+        fontFamily: 'Arial, sans-serif'
+      }});
+    </script>
+  </body>
+</html>

@@ -1,3 +1,16 @@
+"""Adapters between the LangGraph flows and local developer tooling.
+
+The graph modules describe *when* a step runs.  This module describes *how* a
+step reaches the outside world: a selected coding-agent CLI, the provider's
+Atlassian MCP connection, GitHub CLI, project validation commands, and local
+configuration.  Keeping those boundaries here makes the graphs testable with
+fakes and keeps credentials out of graph state and browser responses.
+
+Both Codex and GitHub Copilot CLI are supported through the same workflow
+contracts.  Provider selection is scoped to one run rather than changing a
+developer's global agent settings.
+"""
+
 import base64
 from contextlib import contextmanager
 from contextvars import ContextVar
@@ -142,6 +155,30 @@ def _local_copilot_settings() -> Dict[str, str]:
         return {}
     values = {"model": settings.get("model"), "effortLevel": settings.get("effortLevel")}
     return {key: value for key, value in values.items() if isinstance(value, str) and value.strip()}
+
+
+def configured_mcp_servers(provider: str) -> list[str]:
+    """List configured MCP names only; configuration values and secrets stay private."""
+    if provider == "codex":
+        config_path = Path(os.getenv("CODEX_HOME", str(Path.home() / ".codex"))) / "config.toml"
+        try:
+            with config_path.open("rb") as config_file:
+                config = tomllib.load(config_file)
+        except (FileNotFoundError, OSError, tomllib.TOMLDecodeError):
+            return []
+        servers = config.get("mcp_servers", {})
+        return sorted(str(name) for name in servers) if isinstance(servers, dict) else []
+    if provider == "copilot":
+        config_path = Path(os.getenv("COPILOT_HOME", str(Path.home() / ".copilot"))) / "mcp-config.json"
+        try:
+            config = json.loads(config_path.read_text())
+        except (FileNotFoundError, OSError, json.JSONDecodeError):
+            config = {}
+        servers = config.get("mcpServers", config.get("mcp_servers", {})) if isinstance(config, dict) else {}
+        names = {str(name) for name in servers} if isinstance(servers, dict) else set()
+        names.add("github-mcp-server (built-in)")
+        return sorted(names)
+    raise ValueError("Unknown agent provider")
 
 
 def codex_workflow_configuration(

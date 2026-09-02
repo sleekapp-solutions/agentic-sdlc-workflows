@@ -1,4 +1,10 @@
-"""Agent Server entrypoint for the local, read-only pull-request review flow."""
+"""LangGraph Studio/Agent Server entrypoint for read-only PR review.
+
+LangGraph Studio discovers the module-level compiled ``graph`` object.  The
+repository is selected by ``WORKFLOW_REPO`` (or the current directory), while
+runtime persistence is supplied by the Agent Server rather than this module.
+The underlying graph remains read-only with respect to GitHub and local code.
+"""
 
 import os
 from pathlib import Path

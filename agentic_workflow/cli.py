@@ -1,4 +1,11 @@
-"""Command-line driver for resumable local SDLC workflows."""
+"""Command-line entrypoint for resumable local SDLC workflows.
+
+This module is the non-browser route into the Jira delivery and pull-request
+review graphs.  It selects an explicit target repository, stores local
+LangGraph checkpoints in that repository, starts a run, and resumes approval
+interrupts from JSON decisions.  It deliberately delegates all business logic
+to the graph and adapter modules.
+"""
 import argparse
 import json
 import sys
@@ -8,7 +15,7 @@ from typing import Any
 from langgraph.checkpoint.sqlite import SqliteSaver
 from langgraph.types import Command
 
-from .graph import build_graph
+from .jira_delivery import build_graph
 from .pr_review_graph import build_pr_review_graph
 
 

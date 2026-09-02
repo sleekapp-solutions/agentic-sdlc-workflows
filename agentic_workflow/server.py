@@ -1,13 +1,15 @@
-"""Agent Server entrypoint used by LangGraph Studio.
+"""LangGraph Studio/Agent Server entrypoint for Jira delivery.
 
-The Agent Server owns persistence in deployed environments. The local CLI keeps
-its SQLite checkpointer for terminal-only runs; Studio uses this compiled graph
-and the server's thread/checkpoint APIs instead.
+LangGraph Studio discovers the module-level compiled ``graph`` object.  The
+Agent Server owns persistence in Studio/deployed environments; the terminal
+CLI and local browser UI use their own SQLite checkpointers.  The target
+repository is selected by ``WORKFLOW_REPO`` or, as a fallback, the current
+directory.
 """
 import os
 from pathlib import Path
 
-from .graph import build_graph
+from .jira_delivery import build_graph
 
 
 REPOSITORY_ROOT = Path(os.getenv("WORKFLOW_REPO", Path.cwd())).resolve()
