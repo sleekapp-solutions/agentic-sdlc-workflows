@@ -17,7 +17,6 @@ from langgraph.types import Command
 
 from .jira_delivery import build_graph
 from .pr_review_graph import build_pr_review_graph
-from .project_profiles import resolve_validation
 from .settings import load_workflow_environment
 
 
@@ -49,10 +48,6 @@ def main() -> int:
     with SqliteSaver.from_conn_string(str(database)) as checkpointer:
         config = {"configurable": {"thread_id": args.run_id}}
         if args.command == "start":
-            try:
-                resolve_validation(repo)
-            except RuntimeError as error:
-                parser.error(str(error))
             graph = build_graph(repo).compile(checkpointer=checkpointer)
             result = graph.invoke({"ticket_key": args.ticket}, config=config)
         elif args.command == "review-pr":

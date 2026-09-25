@@ -8,15 +8,25 @@ local configuration and repository metadata cannot be accidentally published.
 """
 
 import hashlib
+import os
 import re
+import shlex
 import subprocess
 from pathlib import Path
 from typing import Dict, List
 
-from .project_profiles import resolve_validation
 
 
 FORBIDDEN_PATHS = (".env", ".agents/", ".claude/", ".git/", ".agentic-workflow/")
+
+
+def configured_validation_commands() -> tuple[tuple[str, ...], ...]:
+    """Parse ``WORKFLOW_VALIDATION_COMMANDS``; empty means validation is off."""
+    configured = os.getenv("WORKFLOW_VALIDATION_COMMANDS", "").strip()
+    commands = tuple(tuple(shlex.split(command)) for command in configured.split(";") if command.strip())
+    if any(not command for command in commands):
+        raise RuntimeError("WORKFLOW_VALIDATION_COMMANDS must contain shell-style commands separated by semicolons")
+    return commands
 
 
 class GitOperations:
@@ -164,35 +174,21 @@ class GitOperations:
 
 
 class ProjectValidator:
-    """Runs the target repository's validation commands.
+    """Runs optional validation commands after implementation.
 
-    Commands come from ``WORKFLOW_VALIDATION_COMMANDS`` or, when unset, from the
-    project type detected in the repository (see :mod:`project_profiles`).
-    They are resolved on first use so that building a graph never fails for a
-    repository that only uses pull-request review.
+    Validation is off unless ``WORKFLOW_VALIDATION_COMMANDS`` lists
+    semicolon-separated commands; with none configured the step is skipped.
     """
 
     def __init__(self, repo_root: Path, commands: tuple[tuple[str, ...], ...] | None = None) -> None:
         self.repo_root = repo_root
-        self._resolved = {"source": "explicit", "label": "custom", "commands": commands} if commands else None
-
-    @property
-    def profile(self) -> Dict[str, object]:
-        if self._resolved is None:
-            self._resolved = resolve_validation(self.repo_root)
-        return self._resolved
-
-    @property
-    def commands(self) -> tuple[tuple[str, ...], ...]:
-        return self.profile["commands"]
+        self.commands = commands if commands is not None else configured_validation_commands()
 
     def run(self) -> Dict[str, object]:
+        if not self.commands:
+            return {"passed": True, "skipped": True, "results": []}
         results = []
         for command in self.commands:
             run = subprocess.run(command, cwd=self.repo_root, text=True, capture_output=True, check=False)
             results.append({"command": " ".join(command), "exit_code": run.returncode, "output": (run.stdout + run.stderr)[-6000:]})
-        return {
-            "passed": all(item["exit_code"] == 0 for item in results),
-            "profile": self.profile["label"],
-            "results": results,
-        }
+        return {"passed": all(item["exit_code"] == 0 for item in results), "results": results}

@@ -572,7 +572,6 @@ def test_validation_commands_can_be_configured_for_non_flutter_projects(monkeypa
 
 
 def test_local_runtime_exposes_live_execution_events(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "true")
     git = FakeGit()
     implementer = FakeImplementer()
 
@@ -612,7 +611,6 @@ def test_local_runtime_exposes_live_execution_events(tmp_path, monkeypatch):
 
 
 def test_local_runtime_retries_only_the_failed_planning_step(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "true")
     class FailsOncePlanner:
         def __init__(self):
             self.calls = 0
@@ -658,7 +656,6 @@ def test_local_runtime_retries_only_the_failed_planning_step(tmp_path, monkeypat
 
 
 def test_local_runtime_does_not_retry_or_plan_a_missing_ticket(tmp_path, monkeypatch):
-    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "true")
     class CountingPlanner(FakePlanner):
         def __init__(self):
             self.calls = 0
@@ -823,76 +820,29 @@ def test_repository_settings_cannot_replace_the_implementation_command_or_read_r
     assert "JIRA_API_TOKEN" not in os.environ
 
 
-def _detect(tmp_path, monkeypatch, files):
-    from agentic_workflow.project_profiles import resolve_validation
 
+def test_validation_is_skipped_when_no_commands_are_configured(tmp_path, monkeypatch):
     monkeypatch.delenv("WORKFLOW_VALIDATION_COMMANDS", raising=False)
-    for name, content in files.items():
-        (tmp_path / name).parent.mkdir(parents=True, exist_ok=True)
-        (tmp_path / name).write_text(content)
-    return resolve_validation(tmp_path)
+
+    result = ProjectValidator(tmp_path).run()
+
+    assert result == {"passed": True, "skipped": True, "results": []}
 
 
-def test_validation_detects_flutter_and_plain_dart(tmp_path, monkeypatch):
-    flutter = _detect(tmp_path / "f", monkeypatch, {"pubspec.yaml": "dependencies:\n  flutter:\n    sdk: flutter\n"})
-    dart = _detect(tmp_path / "d", monkeypatch, {"pubspec.yaml": "name: cli_tool\n"})
+def test_delivery_without_validation_still_reaches_the_publication_gate(tmp_path):
+    class NoValidation:
+        def run(self):
+            return {"passed": True, "skipped": True, "results": []}
 
-    assert (flutter["label"], flutter["commands"]) == ("Flutter", (("flutter", "analyze"), ("flutter", "test")))
-    assert dart["commands"] == (("dart", "analyze"), ("dart", "test"))
+    graph = build_graph(
+        tmp_path, ticket_client=FakeTickets(), planner=FakePlanner(),
+        implementer=FakeImplementer(), git=FakeGit(), validator=NoValidation(),
+    ).compile(checkpointer=InMemorySaver())
+    config = {"configurable": {"thread_id": "no-validation"}}
+    graph.invoke({"ticket_key": "PROJ-1"}, config=config)
+    result = graph.invoke(Command(resume={"action": "approve"}), config=config)
 
-
-def test_validation_uses_node_scripts_and_lockfile_package_manager(tmp_path, monkeypatch):
-    scripts = {"lint": "eslint .", "test": "vitest run", "build": "vite build"}
-    profile = _detect(tmp_path, monkeypatch, {"package.json": json.dumps({"scripts": scripts}), "pnpm-lock.yaml": ""})
-
-    assert profile["label"] == "Node (pnpm)"
-    assert profile["commands"] == (("pnpm", "run", "lint"), ("pnpm", "run", "test"))
-
-
-def test_validation_ignores_the_npm_placeholder_test_script(tmp_path, monkeypatch):
-    from agentic_workflow.project_profiles import ValidationNotConfiguredError
-
-    placeholder = {"scripts": {"test": 'echo "Error: no test specified" && exit 1'}}
-    try:
-        _detect(tmp_path, monkeypatch, {"package.json": json.dumps(placeholder)})
-    except ValidationNotConfiguredError:
-        pass
-    else:
-        raise AssertionError("A placeholder-only package.json must require explicit validation commands")
-
-
-def test_validation_prefers_the_app_toolchain_over_auxiliary_build_files(tmp_path, monkeypatch):
-    profile = _detect(tmp_path, monkeypatch, {"pubspec.yaml": "flutter:\n  sdk: flutter\n", "gradlew": "", "requirements.txt": ""})
-
-    assert profile["label"] == "Flutter"
-
-
-def test_validation_uses_the_target_repository_virtualenv_for_python(tmp_path, monkeypatch):
-    profile = _detect(tmp_path, monkeypatch, {"pyproject.toml": "", ".venv/bin/python": ""})
-
-    assert profile["commands"] == ((str(tmp_path / ".venv" / "bin" / "python"), "-m", "pytest"),)
-
-
-def test_explicit_validation_commands_override_detection(tmp_path, monkeypatch):
-    from agentic_workflow.project_profiles import resolve_validation
-
-    (tmp_path / "go.mod").write_text("module example\n")
-    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "make check")
-
-    assert resolve_validation(tmp_path)["commands"] == (("make", "check"),)
-
-
-def test_delivery_run_refuses_to_start_without_validation(tmp_path, monkeypatch):
-    monkeypatch.delenv("WORKFLOW_VALIDATION_COMMANDS", raising=False)
-    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite")
-
-    try:
-        runtime.start("PROJ-1")
-    except RuntimeError as error:
-        assert ".agentic-workflow.env" in str(error)
-    else:
-        raise AssertionError("Expected the run to stop before any agent work")
-
+    assert result["__interrupt__"][0].value["phase"] == "push_review"
 
 def test_workflow_checkpoints_can_never_be_published(tmp_path):
     try:

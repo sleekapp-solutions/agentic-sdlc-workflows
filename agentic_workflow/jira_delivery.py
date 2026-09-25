@@ -79,6 +79,8 @@ def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=N
     def validate(state: WorkflowState):
         progress("validating", "Running configured project validation")
         validation = validator.run()
+        if validation.get("skipped"):
+            progress("validating", "No validation commands configured; skipping validation")
         if not validation["passed"]:
             return {"validation": validation, "status": "validation_failed"}
         file_changes = git.changes_since(state.get("baseline", {}))

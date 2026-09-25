@@ -7,8 +7,7 @@ secrets out of graph state, and deliberately pauses before every material
 action.
 
 > Status: a local-first foundation for continued work toward a fully
-> plug-and-play SDLC workflow tool. Validation commands are detected from the
-> target repository's project type, or configured explicitly per repository.
+> plug-and-play SDLC workflow tool.
 
 For a vendor-neutral explanation of when to use an agent skill, an agentic
 workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Workflow](docs/agent-workflow-vs-skill.md).
@@ -17,7 +16,7 @@ workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Work
 
 | Flow | Input | What it can do | What it will not do automatically |
 | --- | --- | --- | --- |
-| Jira delivery | Jira key such as `PROJ-14` | Fetch ticket, draft a plan, implement after approval, validate, then create a draft PR after a second approval | Push, commit, or create a PR without explicit approval |
+| Jira delivery | Jira key such as `PROJ-14` | Fetch ticket, draft a plan, implement after approval, optionally validate, then create a draft PR after a second approval | Push, commit, or create a PR without explicit approval |
 | Pull-request review | GitHub PR number | Read the PR and patch, generate a structured review, then publish an explicitly approved approval, change request, or comment | Change code or post any review without explicit approval |
 
 ## Quick start
@@ -29,7 +28,7 @@ workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Work
 - One agent CLI, logged in: [Codex CLI](https://developers.openai.com/) (default) or
   [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart) (`copilot login`).
 - For Jira delivery only: an Atlassian MCP server named `atlassian` in that agent's settings.
-- The target repository's toolchain (for example `flutter`, `npm`, `go`).
+- The target repository must be a `git clone` with a GitHub `origin` remote.
 
 ### 2. Install the tool
 
@@ -168,43 +167,21 @@ configured Atlassian MCP server only for Jira retrieval, and uses only `write`
 and `shell` permissions for the approved implementation step. Credentials are
 not stored in LangGraph state or returned to the browser.
 
-## Validation commands
+## Validation (optional)
 
-After implementation, the Jira delivery flow runs the target repository's
-validation commands and only offers a draft PR if they pass. When
-`WORKFLOW_VALIDATION_COMMANDS` is not set, the commands are detected from files
-at the repository root. The first match wins:
-
-| Marker | Detected as | Commands |
-| --- | --- | --- |
-| `pubspec.yaml` with `sdk: flutter` | Flutter | `flutter analyze`, `flutter test` |
-| `pubspec.yaml` | Dart | `dart analyze`, `dart test` |
-| `package.json` | Node | `lint`, `typecheck`, and `test` scripts that exist, run with npm, pnpm, yarn, or bun according to the lockfile |
-| `go.mod` | Go | `go vet ./...`, `go test ./...` |
-| `Cargo.toml` | Rust | `cargo test` |
-| `Package.swift` | Swift package | `swift test` |
-| `gradlew` | Gradle | `./gradlew test` |
-| `pom.xml` | Maven | `mvn -q test` |
-| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | Python | `pytest`, using the repository's `.venv` or `venv` interpreter when present |
-
-The detected profile appears in the UI's **Local environment** panel. If no
-profile matches and nothing is configured, a delivery run refuses to start
-before any agent work. Pull-request review never runs validation, so it works
-in any repository.
-
-To override detection, or for monorepos and projects not listed above, add a
-semicolon-separated list to a `.agentic-workflow.env` file in the target
+Validation is off by default: after implementation the flow goes straight to
+the file-approval gate. To run checks before a draft PR is offered, add
+semicolon-separated commands to `.agentic-workflow.env` in the target
 repository:
 
 ```dotenv
 WORKFLOW_VALIDATION_COMMANDS=npm run lint; npm test
 ```
 
-Because this file can be committed and shared, it may only set
+If any command fails, no draft PR is created. This file may only set
 `WORKFLOW_VALIDATION_COMMANDS`, `WORKFLOW_AGENT_PROVIDER`, and the
-`WORKFLOW_CODEX_*` / `WORKFLOW_COPILOT_*` model and MCP-name settings. Other
-keys, including `IMPLEMENTATION_COMMAND` and credentials, are ignored there and
-belong in your user or checkout `.env`.
+`WORKFLOW_CODEX_*` / `WORKFLOW_COPILOT_*` settings; everything else belongs in
+your user config.
 
 ## Run the local UI
 
@@ -313,8 +290,6 @@ the approval model.
 - **Integration packs:** declarative Jira/Atlassian, GitHub, GitLab, Linear,
   and test/CI connectors with explicit read/write scopes and connection health
   checks. No integration should silently export repository or ticket content.
-- **Repository profiles:** monorepo-aware detection, Xcode and Android
-  presets beyond Gradle, and a dry-run validator.
 - **Workflow catalog:** a UI-driven flow picker with Jira delivery, PR review,
   bug triage, release readiness, dependency/security review, and reusable
   organization templates. Each flow should include its graph, inputs, and

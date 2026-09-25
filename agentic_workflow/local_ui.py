@@ -42,7 +42,6 @@ from .adapters import (
     configured_mcp_servers,
     use_workflow_configuration,
 )
-from .project_profiles import resolve_validation
 from .settings import load_workflow_environment
 
 
@@ -229,19 +228,6 @@ def _sanitized_origin(repo_root: Path) -> str | None:
     return urlunparse((parsed.scheme, netloc, parsed.path, "", "", ""))
 
 
-def _validation_status(repo_root: Path) -> Dict[str, Any]:
-    try:
-        profile = resolve_validation(repo_root)
-    except RuntimeError as error:
-        return {"configured": False, "source": "none", "label": "Not configured", "commands": [], "error": str(error)}
-    return {
-        "configured": True,
-        "source": profile["source"],
-        "label": profile["label"],
-        "commands": [" ".join(command) for command in profile["commands"]],
-    }
-
-
 def _github_cli_status() -> Dict[str, Any]:
     if not shutil.which("gh"):
         return {"available": False, "authenticated": False}
@@ -423,8 +409,6 @@ class WorkflowRuntime:
         ticket_key = ticket_key.strip().upper()
         if not TICKET_KEY_PATTERN.fullmatch(ticket_key):
             raise ValueError("Ticket key must look like PROJ-14")
-        # Fail before any agent work if the repository cannot be validated.
-        resolve_validation(self.repo_root)
         model_configuration = self._model_configuration(provider, model, reasoning_effort)
         run_id = f"ui-{ticket_key.lower()}-{uuid.uuid4().hex[:8]}"
         with self._lock:
@@ -523,7 +507,6 @@ class WorkflowRuntime:
                 "is_git_repository": (self.repo_root / ".git").exists(),
             },
             "github_cli": _github_cli_status(),
-            "validation": _validation_status(self.repo_root),
             "providers": {provider: _provider_environment(provider) for provider in sorted(AGENT_PROVIDERS)},
             "note": "MCP status means configured locally; it is not a live permission or connectivity check.",
         }
@@ -630,7 +613,7 @@ function startPolling(){ if(poller||!run?.run_id) return; poller=setInterval(asy
 async function showDiff(path){ const panel=document.querySelector('#diffPanel'); if(openDiffPath===path){panel.hidden=true;openDiffPath=null;document.querySelectorAll('.file-diff').forEach(button=>button.textContent='View diff');return} openDiffPath=path; panel.hidden=false; document.querySelectorAll('.file-diff').forEach(button=>button.textContent=button.dataset.path===path?'Hide diff':'View diff'); panel.textContent='Loading '+path+'…'; try{const result=await request('/api/runs/'+run.run_id+'/diff?path='+encodeURIComponent(path)); panel.innerHTML=renderDiff(result.diff)}catch(error){openDiffPath=null;panel.textContent='Unable to load diff: '+error.message;document.querySelectorAll('.file-diff').forEach(button=>button.textContent='View diff')} }
 async function resume(decision){ actions.innerHTML='<p>Continuing local workflow…</p>'; try{render(await request('/api/runs/'+run.run_id+'/resume',decision))}catch(e){actions.innerHTML='<p class="error">'+escapeHtml(e.message)+'</p>'} }
 async function retryRun(){actions.innerHTML='<p>Retrying only the failed step…</p>';try{render(await request('/api/runs/'+run.run_id+'/retry',{}))}catch(e){actions.innerHTML='<p class="error">'+escapeHtml(e.message)+'</p>'}}
-function renderEnvironment(){if(!environmentData)return;const repo=environmentData.repository||{}, provider=environmentData.providers?.[providerPicker.value]||{}, github=environmentData.github_cli||{}, validation=environmentData.validation||{}, mcps=(provider.configured_mcps||[]);const mcpList=mcps.length?'<ul>'+mcps.map(name=>'<li>'+escapeHtml(name)+'</li>').join('')+'</ul>':'<strong class="warn">None found</strong>';environmentStatus.innerHTML='<div><small>Target repository</small><strong>'+escapeHtml(repo.name||'Unknown')+'</strong><small>'+escapeHtml(repo.origin||repo.path||'No origin remote')+'</small></div><div><small>GitHub CLI</small><strong class="'+(github.authenticated?'ok':'warn')+'">'+(github.authenticated?'Authenticated':github.available?'Not authenticated':'Not installed')+'</strong></div><div><small>Validation · '+escapeHtml(validation.source||'none')+'</small><strong class="'+(validation.configured?'ok':'warn')+'">'+escapeHtml(validation.label||'Not configured')+'</strong><small>'+escapeHtml((validation.commands||[]).join('; ')||'Set WORKFLOW_VALIDATION_COMMANDS in .agentic-workflow.env')+'</small></div><div><small>'+escapeHtml(provider.label||'Agent provider')+'</small><strong class="'+(provider.installed?'ok':'warn')+'">'+(provider.installed?'Installed':'Not installed')+'</strong></div><div><small>Configured MCPs · '+escapeHtml(provider.label||'selected provider')+'</small>'+mcpList+'</div><div><small>Jira MCP · '+escapeHtml(provider.expected_jira_mcp||'atlassian')+'</small><strong class="'+(provider.jira_mcp_configured?'ok':'warn')+'">'+(provider.jira_mcp_configured?'Configured':'Not configured')+'</strong></div>';environmentNote.textContent=environmentData.note||''}
+function renderEnvironment(){if(!environmentData)return;const repo=environmentData.repository||{}, provider=environmentData.providers?.[providerPicker.value]||{}, github=environmentData.github_cli||{}, mcps=(provider.configured_mcps||[]);const mcpList=mcps.length?'<ul>'+mcps.map(name=>'<li>'+escapeHtml(name)+'</li>').join('')+'</ul>':'<strong class="warn">None found</strong>';environmentStatus.innerHTML='<div><small>Target repository</small><strong>'+escapeHtml(repo.name||'Unknown')+'</strong><small>'+escapeHtml(repo.origin||repo.path||'No origin remote')+'</small></div><div><small>GitHub CLI</small><strong class="'+(github.authenticated?'ok':'warn')+'">'+(github.authenticated?'Authenticated':github.available?'Not authenticated':'Not installed')+'</strong></div><div><small>'+escapeHtml(provider.label||'Agent provider')+'</small><strong class="'+(provider.installed?'ok':'warn')+'">'+(provider.installed?'Installed':'Not installed')+'</strong></div><div><small>Configured MCPs · '+escapeHtml(provider.label||'selected provider')+'</small>'+mcpList+'</div><div><small>Jira MCP · '+escapeHtml(provider.expected_jira_mcp||'atlassian')+'</small><strong class="'+(provider.jira_mcp_configured?'ok':'warn')+'">'+(provider.jira_mcp_configured?'Configured':'Not configured')+'</strong></div>';environmentNote.textContent=environmentData.note||''}
 function updateStartForm(){const review=flowPicker.value==='pr_review', copilot=providerPicker.value==='copilot', noEffort=effortPicker.querySelector('option[value="none"]');noEffort.disabled=!copilot&&modelPicker.value==='gpt-5.6-luna';if(noEffort.disabled&&effortPicker.value==='none')effortPicker.value='';if(copilot)effortPicker.value='';effortPicker.disabled=copilot;document.querySelector('#startTitle').textContent=review?'Start a pull-request review':'Start a delivery run';startValue.placeholder=review?'42':'PROJ-14';document.querySelector('#startValueLabel').firstChild.textContent=review?'Pull-request number':'Jira ticket key';document.querySelector('#startButton').textContent=review?'Review pull request':'Analyze ticket';const settings=providerDefaults[providerPicker.value];if(settings){modelPicker.placeholder='Default: '+(settings.model||'Automatic');defaultConfiguration.textContent=settings.provider_label+' defaults · Model: '+(settings.model||'Automatic')+' ('+(settings.model_source||'runtime')+') · Reasoning: '+(settings.reasoning_effort||'Automatic')+' ('+(settings.reasoning_effort_source||'runtime')+').'+(copilot?' Reasoning effort is managed by Copilot local settings.':'')}renderEnvironment()}
 async function loadDefaults(){try{const configuration=await request('/api/configuration');providerDefaults=configuration.providers||{};const selected=configuration.defaults?.provider||'codex';providerPicker.value=providerDefaults[selected]?selected:'codex';updateStartForm()}catch(error){defaultConfiguration.textContent='Local agent defaults could not be read. The selected CLI will use its automatic defaults.'}}
 async function loadEnvironment(){try{environmentData=await request('/api/environment');renderEnvironment()}catch(error){environmentStatus.innerHTML='<div><strong class="warn">Environment status unavailable</strong></div>';environmentNote.textContent=error.message}}
