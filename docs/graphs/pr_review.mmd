@@ -1,6 +1,22 @@
 flowchart TD
-    start([Start: pull-request number]) --> fetch[Read PR metadata and patch through GitHub CLI]
-    fetch --> review[Selected local agent produces local structured review]
-    review --> acknowledgement{{Human acknowledgement}}
-    acknowledgement -->|Acknowledge| done([Review recorded locally])
-    acknowledgement -->|Dismiss| dismissed([Review dismissed locally])
+    start([New run]) --> fetch[Fetch pull-request metadata and patch]
+    fetch --> review[Agent produces a structured local review]
+    review --> approval{Publication decision}
+    approval -->|Dismiss| dismissed([Stop: review remains local])
+    approval -->|Approve, request changes, or comment| selection[Validate body and selected findings]
+    selection --> publish[Publish the approved review]
+    publish --> done([Review published])
+
+    stageFailure[Fetch, review, or publication failure] -.-> failed[Record an accurate stage error]
+    failed --> retryChoice{Retry available?}
+    retryChoice -->|No| errorStop([Stop: action required])
+    retryChoice -->|Yes| retry[Resume the recorded failed stage]
+
+    classDef action fill:#e8f0fe,stroke:#3667a6,color:#152033;
+    classDef decision fill:#fff4cc,stroke:#a46f00,color:#332500;
+    classDef success fill:#e4f6e9,stroke:#2f7d44,color:#12351c;
+    classDef stop fill:#f8e7e7,stroke:#a33d3d,color:#421919;
+    class fetch,review,selection,publish,failed,retry action;
+    class approval,retryChoice decision;
+    class done success;
+    class dismissed,errorStop stop;

@@ -29,6 +29,11 @@ class WorkflowState(TypedDict, total=False):
     pull_request: Dict[str, Any]
     pull_request_diff: str
     review: Dict[str, Any]
+    review_event: str
+    review_body: str
+    review_findings: List[Dict[str, Any]]
+    published_review: Dict[str, Any]
+    retry_target: str
 
 
 class TicketClient:
@@ -53,6 +58,11 @@ class PullRequestClient:
         raise NotImplementedError
 
     def diff(self, number: int) -> str:
+        raise NotImplementedError
+
+    def publish_review(
+        self, number: int, event: str, body: str, findings: List[Dict[str, Any]], pull_request: Dict[str, Any]
+    ) -> Dict[str, Any]:
         raise NotImplementedError
 
 

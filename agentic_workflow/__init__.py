@@ -2,7 +2,7 @@
 
 This package contains the repository-specific application built on LangGraph.
 It exposes two flows: Jira delivery, which pauses before implementation and
-publication, and read-only pull-request review.  Provider credentials and MCP
+publication, and pull-request review with an explicit publication gate. Provider credentials and MCP
 configuration remain outside package state; importing the package only loads
 local workflow configuration when it is present.
 """

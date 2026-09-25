@@ -1,0 +1,10 @@
+{
+  "name": "agentic-sdlc-workflows",
+  "private": true,
+  "scripts": {
+    "docs:diagrams": "mmdc -i docs/graphs/jira_delivery.mmd -o docs/graphs/jira_delivery.svg -b transparent && mmdc -i docs/graphs/pr_review.mmd -o docs/graphs/pr_review.svg -b transparent"
+  },
+  "devDependencies": {
+    "@mermaid-js/mermaid-cli": "^11.17.0"
+  }
+}

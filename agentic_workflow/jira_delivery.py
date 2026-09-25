@@ -125,6 +125,21 @@ def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=N
         )
         return {"commit_sha": sha, "pull_request_url": pull_request_url, "status": "published"}
 
+    def retry_request(state: WorkflowState):
+        """Checkpoint marker used by the runtime before a stage-aware retry."""
+        return {}
+
+    def start_route(state: WorkflowState):
+        return "retry_request" if state.get("retry_target") else "fetch_ticket"
+
+    def retry_dispatch(state: WorkflowState):
+        target = state.get("retry_target")
+        allowed_targets = {"fetch_ticket", "make_plan", "implement", "validate", "publish"}
+        if target not in allowed_targets:
+            raise ValueError("This delivery run cannot be retried from its current state")
+        progress("retrying", f"Retrying {str(target).replace('_', ' ')}")
+        return Command(goto=target, update={"status": "retrying", "retry_target": ""})
+
     graph = StateGraph(WorkflowState)
     graph.add_node("fetch_ticket", fetch_ticket)
     graph.add_node("make_plan", make_plan)
@@ -134,11 +149,14 @@ def build_graph(repo_root: Path, ticket_client=None, planner=None, implementer=N
     graph.add_node("validate", validate)
     graph.add_node("review_push", review_push)
     graph.add_node("publish", publish)
-    graph.add_edge(START, "fetch_ticket")
+    graph.add_node("retry_request", retry_request)
+    graph.add_node("retry_dispatch", retry_dispatch)
+    graph.add_conditional_edges(START, start_route, {"fetch_ticket": "fetch_ticket", "retry_request": "retry_request"})
     graph.add_edge("fetch_ticket", "make_plan")
     graph.add_edge("make_plan", "review_plan")
     graph.add_edge("prepare_workspace", "implement")
     graph.add_edge("implement", "validate")
     graph.add_edge("validate", "review_push")
     graph.add_edge("publish", END)
+    graph.add_edge("retry_request", "retry_dispatch")
     return graph

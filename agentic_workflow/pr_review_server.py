@@ -1,9 +1,10 @@
-"""LangGraph Studio/Agent Server entrypoint for read-only PR review.
+"""LangGraph Studio/Agent Server entrypoint for human-approved PR review.
 
 LangGraph Studio discovers the module-level compiled ``graph`` object.  The
 repository is selected by ``WORKFLOW_REPO`` (or the current directory), while
 runtime persistence is supplied by the Agent Server rather than this module.
-The underlying graph remains read-only with respect to GitHub and local code.
+The underlying graph never changes local code and only publishes a GitHub review
+after its explicit publication interrupt is approved.
 """
 
 import os

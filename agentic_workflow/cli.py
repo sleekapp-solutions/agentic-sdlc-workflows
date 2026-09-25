@@ -36,6 +36,7 @@ def main() -> int:
     review_pr.add_argument("--run-id", required=True, help="Stable ID used to resume this run")
     resume = subparsers.add_parser("resume", help="Resume a paused approval")
     resume.add_argument("--run-id", required=True, help="Run ID returned from start")
+    resume.add_argument("--flow", choices=("jira_delivery", "pr_review"), default="jira_delivery", help="Workflow that owns the paused run")
     resume.add_argument("--decision", required=True, help="JSON, e.g. '{\"action\":\"approve\"}'")
     args = parser.parse_args()
 
@@ -51,7 +52,7 @@ def main() -> int:
             graph = build_pr_review_graph(repo).compile(checkpointer=checkpointer)
             result = graph.invoke({"pr_number": args.number}, config=config)
         else:
-            graph = build_graph(repo).compile(checkpointer=checkpointer)
+            graph = (build_graph(repo) if args.flow == "jira_delivery" else build_pr_review_graph(repo)).compile(checkpointer=checkpointer)
             try:
                 decision = json.loads(args.decision)
             except json.JSONDecodeError as error:

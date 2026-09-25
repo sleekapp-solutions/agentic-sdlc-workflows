@@ -1,15 +1,34 @@
 flowchart TD
-    start([Start: Jira ticket key]) --> ticket[Read ticket through Atlassian MCP]
-    ticket --> plan[Create a structured implementation plan]
-    plan --> planApproval{{Human plan approval}}
-    planApproval -->|Revise| plan
-    planApproval -->|Reject| stop([Stop])
-    planApproval -->|Approve| branch[Create or reuse agent/TICKET branch]
-    branch --> implement[Selected local agent implements approved plan]
-    implement --> validate[Run configured validation]
-    validate -->|Failed| validationFailed([Stop: validation failure])
-    validate -->|No new files| noChanges([Stop: nothing to publish])
-    validate -->|Passed| publishApproval{{Human path + push approval}}
-    publishApproval -->|Reject| stop
-    publishApproval -->|Approve selected paths| publish[Commit, push, create draft PR]
-    publish --> done([Done])
+    start([New run]) --> fetch[Fetch Jira ticket through configured integration]
+    fetch -->|Ticket retrieved| plan[Agent creates a structured implementation plan]
+    fetch -->|Confirmed not found| notFound([Stop: ticket not found])
+    fetch -->|Integration, access, or temporary failure| failed[Record an accurate stage error]
+
+    plan --> planApproval{Plan decision}
+    planApproval -->|Revise with feedback| plan
+    planApproval -->|Reject| rejected([Stop: plan rejected])
+    planApproval -->|Approve| branch[Create or reuse isolated ticket branch]
+
+    branch --> implement[Agent implements the approved plan]
+    implement --> validate[Run configured project validation]
+    validate -->|Checks failed| validationFailed([Stop: validation failed])
+    validate -->|No run-owned changes| noChanges([Stop: nothing to publish])
+    validate -->|Passed with changes| publishApproval{Publication decision}
+
+    publishApproval -->|Reject| pushRejected([Stop: publication rejected])
+    publishApproval -->|Approve selected paths| publish[Commit selected paths, push branch, create draft PR]
+    publish --> done([Draft PR published])
+
+    stageFailure[Plan, implementation, validation,<br/>or publication tool failure] -.-> failed
+    failed --> retryChoice{Retry available?}
+    retryChoice -->|No| errorStop([Stop: action required])
+    retryChoice -->|Yes| retry[Resume the recorded failed stage]
+
+    classDef action fill:#e8f0fe,stroke:#3667a6,color:#152033;
+    classDef decision fill:#fff4cc,stroke:#a46f00,color:#332500;
+    classDef success fill:#e4f6e9,stroke:#2f7d44,color:#12351c;
+    classDef stop fill:#f8e7e7,stroke:#a33d3d,color:#421919;
+    class fetch,plan,branch,implement,validate,publish,failed,retry action;
+    class planApproval,publishApproval,retryChoice decision;
+    class done success;
+    class notFound,errorStop,rejected,validationFailed,noChanges,pushRejected stop;

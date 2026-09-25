@@ -11,6 +11,13 @@ from agentic_workflow.git_ops import GitOperations, ProjectValidator
 from agentic_workflow.adapters import (
     CodexMcpTicketClient,
     CopilotJsonAgent,
+    GitHubCliPullRequestClient,
+    LocalMcpTicketClient,
+    TicketLookupResponseError,
+    TicketMcpAccessError,
+    TicketMcpNotConfiguredError,
+    TicketMcpUnavailableError,
+    TicketNotFoundError,
     _copilot_options,
     _codex_options,
     agent_workflow_configuration,
@@ -35,6 +42,11 @@ class FakePlanner:
 class EmptySummaryTickets:
     def fetch(self, key):
         return {"key": key, "summary": "", "description": "Requirements"}
+
+
+class MissingTickets:
+    def fetch(self, key):
+        raise TicketNotFoundError(key)
 
 
 class FakeImplementer:
@@ -78,11 +90,18 @@ class PassingValidator:
 
 
 class FakePullRequests:
+    def __init__(self):
+        self.published_reviews = []
+
     def fetch(self, number):
-        return {"number": number, "title": "Protect progress state", "url": f"https://github.com/example/memomatch/pull/{number}"}
+        return {"number": number, "title": "Protect progress state", "headRefOid": "deadbeef", "url": f"https://github.com/example/memomatch/pull/{number}"}
 
     def diff(self, number):
         return "diff --git a/lib/progress.dart b/lib/progress.dart\n+@@ -1 +1 @@\n-old\n+new\n"
+
+    def publish_review(self, number, event, body, findings, pull_request):
+        self.published_reviews.append((number, event, body, findings, pull_request))
+        return {"id": 17, "state": "CHANGES_REQUESTED", "url": "https://github.com/example/memomatch/pull/42#pullrequestreview-17"}
 
 
 class FakePullRequestReviewer:
@@ -143,6 +162,40 @@ def test_ticket_without_a_title_stops_before_planning_or_implementation():
         raise AssertionError("Expected an incomplete Jira ticket to stop the workflow")
 
 
+def test_missing_ticket_fast_fails_before_planning_or_implementation():
+    class CountingPlanner(FakePlanner):
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, ticket, feedback=None):
+            self.calls += 1
+            return super().create(ticket, feedback)
+
+    planner = CountingPlanner()
+    implementer = FakeImplementer()
+    graph = build_graph(
+        Path.cwd(),
+        ticket_client=MissingTickets(),
+        planner=planner,
+        implementer=implementer,
+        git=FakeGit(),
+        validator=PassingValidator(),
+    ).compile(checkpointer=InMemorySaver())
+
+    try:
+        graph.invoke({"ticket_key": "MGA-66"}, config={"configurable": {"thread_id": "missing-ticket"}})
+    except TicketNotFoundError as error:
+        assert str(error) == (
+            "The MGA-66 key may be invalid, deleted, moved, or inaccessible "
+            "to the configured Atlassian MCP identity."
+        )
+    else:
+        raise AssertionError("Expected a missing Jira ticket to stop the workflow")
+
+    assert planner.calls == 0
+    assert implementer.calls == 0
+
+
 def test_explicit_second_approval_publishes_only_selected_paths():
     graph, git, _ = build_test_graph()
     config = {"configurable": {"thread_id": "test-publish"}}
@@ -159,9 +212,10 @@ def test_explicit_second_approval_publishes_only_selected_paths():
     assert git.draft_pull_requests == [("SCRUM-3", "A ticket", "agent/scrum-3")]
 
 
-def test_pull_request_review_stops_for_human_acknowledgement_without_writes():
+def test_pull_request_review_publishes_only_the_explicitly_approved_decision():
+    client = FakePullRequests()
     graph = build_pr_review_graph(
-        Path.cwd(), pull_request_client=FakePullRequests(), reviewer=FakePullRequestReviewer()
+        Path.cwd(), pull_request_client=client, reviewer=FakePullRequestReviewer()
     ).compile(checkpointer=InMemorySaver())
     config = {"configurable": {"thread_id": "test-pr-review"}}
 
@@ -170,8 +224,45 @@ def test_pull_request_review_stops_for_human_acknowledgement_without_writes():
     assert paused["__interrupt__"]
     assert paused["pull_request"]["title"] == "Protect progress state"
     assert paused["review"]["verdict"] == "request_changes"
-    finished = graph.invoke(Command(resume={"action": "approve"}), config=config)
-    assert finished["status"] == "pr_review_acknowledged"
+    finished = graph.invoke(
+        Command(resume={"action": "publish", "event": "request_changes", "body": "Please address this regression.", "finding_indexes": [0]}),
+        config=config,
+    )
+    assert finished["status"] == "pr_review_published"
+    assert finished["published_review"]["id"] == 17
+    assert client.published_reviews[0][1:4] == ("request_changes", "Please address this regression.", [paused["review"]["findings"][0]])
+
+
+def test_github_review_publication_uses_one_review_request_with_selected_inline_comments(monkeypatch, tmp_path):
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = '{"id":17,"state":"CHANGES_REQUESTED","html_url":"https://github.com/example/repo/pull/42#pullrequestreview-17"}'
+        stderr = ""
+
+    def run(command, **kwargs):
+        captured["command"] = command
+        captured["payload"] = json.loads(kwargs["input"])
+        return Result()
+
+    monkeypatch.setattr("agentic_workflow.adapters.subprocess.run", run)
+    published = GitHubCliPullRequestClient(tmp_path).publish_review(
+        42,
+        "request_changes",
+        "Please fix the regression.",
+        [{"title": "Migration", "body": "Keep old progress readable.", "path": "lib/progress.dart", "line": 10}],
+        {"headRefOid": "deadbeef"},
+    )
+
+    assert captured["command"][:5] == ["gh", "api", "--method", "POST", "repos/{owner}/{repo}/pulls/42/reviews"]
+    assert captured["payload"] == {
+        "commit_id": "deadbeef",
+        "event": "REQUEST_CHANGES",
+        "body": "Please fix the regression.",
+        "comments": [{"path": "lib/progress.dart", "line": 10, "side": "RIGHT", "body": "Keep old progress readable."}],
+    }
+    assert published["state"] == "CHANGES_REQUESTED"
 
 
 def test_local_reviewer_ui_serves_its_browser_interface():
@@ -235,12 +326,50 @@ def test_missing_atlassian_title_has_a_specific_recovery_message():
     assert "key was found" in explanation["summary"]
 
 
+def test_missing_ticket_has_a_terminal_failure_message():
+    error = TicketNotFoundError("MGA-66")
+    explanation = explain_failure("fetching_ticket", error)
+
+    assert explanation["title"] == "Jira ticket was not found"
+    assert explanation["summary"] == (
+        "The MGA-66 key may be invalid, deleted, moved, or inaccessible "
+        "to the configured Atlassian MCP identity."
+    )
+    assert explanation["technical_detail"] == ""
+
+
+def test_ticket_lookup_failures_have_specific_recovery_messages():
+    cases = [
+        (
+            TicketMcpNotConfiguredError("GitHub Copilot CLI", "atlassian"),
+            "Jira MCP is not configured",
+            False,
+        ),
+        (TicketMcpAccessError("MGA-66", "403"), "Jira access was denied", False),
+        (
+            TicketMcpUnavailableError("MGA-66", "timeout"),
+            "Jira lookup is temporarily unavailable",
+            True,
+        ),
+        (
+            TicketLookupResponseError("missing status"),
+            "Jira returned an invalid response",
+            True,
+        ),
+    ]
+
+    for error, title, retryable in cases:
+        explanation = explain_failure("fetching_ticket", error)
+        assert explanation["title"] == title
+        assert error.retryable is retryable
+
+
 def test_atlassian_ticket_schema_requires_a_nonempty_summary(tmp_path):
     class CapturingAgent:
         def run(self, prompt, schema):
             self.prompt = prompt
             self.schema = schema
-            return {"key": "MGA-38", "summary": "A title", "description": "", "issue_type": "Task", "url": "https://jira.example/MGA-38"}
+            return {"status": "found", "key": "MGA-38", "summary": "A title", "description": "", "issue_type": "Task", "url": "https://jira.example/MGA-38", "error_detail": ""}
 
     client = CodexMcpTicketClient(tmp_path)
     client.agent = CapturingAgent()
@@ -248,8 +377,71 @@ def test_atlassian_ticket_schema_requires_a_nonempty_summary(tmp_path):
     ticket = client.fetch("MGA-38")
 
     assert ticket["summary"] == "A title"
-    assert client.agent.schema["properties"]["summary"]["minLength"] == 1
+    assert client.agent.schema["properties"]["status"]["enum"] == [
+        "found", "not_found", "permission_denied", "unavailable"
+    ]
     assert "actual Jira Summary field" in client.agent.prompt
+
+
+def test_atlassian_ticket_lookup_reports_not_found_without_guessing(tmp_path):
+    class MissingAgent:
+        def run(self, prompt, schema):
+            self.prompt = prompt
+            return {"status": "not_found", "key": "", "summary": "", "description": "", "issue_type": "", "url": "", "error_detail": "Issue does not exist"}
+
+    client = CodexMcpTicketClient(tmp_path)
+    client.agent = MissingAgent()
+
+    try:
+        client.fetch("MGA-66")
+    except TicketNotFoundError as error:
+        assert "The MGA-66 key may be invalid" in str(error)
+    else:
+        raise AssertionError("Expected a missing Jira ticket result to fail")
+
+    assert "do not guess" in client.agent.prompt
+
+
+def test_copilot_ticket_lookup_fails_before_agent_when_jira_mcp_is_not_configured(tmp_path, monkeypatch):
+    copilot_home = tmp_path / "copilot"
+    copilot_home.mkdir()
+    (copilot_home / "mcp-config.json").write_text('{"mcpServers":{}}')
+    monkeypatch.setenv("COPILOT_HOME", str(copilot_home))
+    configuration = agent_workflow_configuration(provider="copilot")
+
+    with use_codex_workflow_configuration(configuration):
+        client = LocalMcpTicketClient(tmp_path)
+
+        class UnexpectedAgent:
+            def run(self, *args, **kwargs):
+                raise AssertionError("The agent must not run without a configured Jira MCP")
+
+        client.agent = UnexpectedAgent()
+        try:
+            client.fetch("MGA-66")
+        except TicketMcpNotConfiguredError as error:
+            assert str(error) == "GitHub Copilot CLI has no configured Jira MCP server named 'atlassian'."
+        else:
+            raise AssertionError("Expected the missing Copilot Jira MCP configuration to fail")
+
+
+def test_ticket_lookup_distinguishes_access_service_and_response_failures():
+    base = {"key": "", "summary": "", "description": "", "issue_type": "", "url": ""}
+    cases = [
+        ({**base, "status": "permission_denied", "error_detail": "401"}, TicketMcpAccessError),
+        ({**base, "status": "unavailable", "error_detail": "timeout"}, TicketMcpUnavailableError),
+        ({**base, "status": "unexpected", "error_detail": ""}, TicketLookupResponseError),
+    ]
+
+    from agentic_workflow.adapters import _resolved_ticket
+
+    for result, expected_error in cases:
+        try:
+            _resolved_ticket("MGA-66", result)
+        except expected_error:
+            pass
+        else:
+            raise AssertionError(f"Expected {expected_error.__name__}")
 
 
 def test_ui_model_choice_is_scoped_to_one_workflow_run(tmp_path):
@@ -416,6 +608,89 @@ def test_local_runtime_exposes_live_execution_events(tmp_path, monkeypatch):
         "awaiting_plan_review",
         "plan_review",
     ]
+
+
+def test_local_runtime_retries_only_the_failed_planning_step(tmp_path, monkeypatch):
+    class FailsOncePlanner:
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, ticket, feedback=None):
+            self.calls += 1
+            if self.calls == 1:
+                raise RuntimeError("temporary local agent error")
+            return {"goal": ticket["summary"], "implementation_steps": ["change code"], "tests": ["run tests"]}
+
+    planner = FailsOncePlanner()
+
+    def graph_factory(repo_root, report=None):
+        return build_graph(
+            repo_root,
+            ticket_client=FakeTickets(),
+            planner=planner,
+            implementer=FakeImplementer(),
+            git=FakeGit(),
+            validator=PassingValidator(),
+            report=report,
+        )
+
+    monkeypatch.setattr(GitOperations, "snapshot_changes", lambda self: {})
+    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
+    response = runtime.start("SCRUM-3")
+    deadline = time.monotonic() + 2
+    while response["run"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+        response = runtime.status(response["run_id"])
+
+    assert response["run"]["failure"]["title"] == "Implementation plan could not be created"
+    assert response["run"]["retry"] == {"available": True, "target": "make_plan"}
+    assert response["state"]["ticket"]["summary"] == "A ticket"
+
+    response = runtime.retry(response["run_id"])
+    while response["run"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+        response = runtime.status(response["run_id"])
+
+    assert planner.calls == 2
+    assert response["phase"] == "plan_review"
+
+
+def test_local_runtime_does_not_retry_or_plan_a_missing_ticket(tmp_path, monkeypatch):
+    class CountingPlanner(FakePlanner):
+        def __init__(self):
+            self.calls = 0
+
+        def create(self, ticket, feedback=None):
+            self.calls += 1
+            return super().create(ticket, feedback)
+
+    planner = CountingPlanner()
+
+    def graph_factory(repo_root, report=None):
+        return build_graph(
+            repo_root,
+            ticket_client=MissingTickets(),
+            planner=planner,
+            implementer=FakeImplementer(),
+            git=FakeGit(),
+            validator=PassingValidator(),
+            report=report,
+        )
+
+    monkeypatch.setattr(GitOperations, "snapshot_changes", lambda self: {})
+    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
+    response = runtime.start("MGA-66")
+    deadline = time.monotonic() + 2
+    while response["run"]["running"] and time.monotonic() < deadline:
+        time.sleep(0.01)
+        response = runtime.status(response["run_id"])
+
+    assert response["run"]["failure"]["summary"] == (
+        "The MGA-66 key may be invalid, deleted, moved, or inaccessible "
+        "to the configured Atlassian MCP identity."
+    )
+    assert response["run"]["retry"] == {"available": False, "target": None}
+    assert planner.calls == 0
 
 
 def test_local_runtime_starts_a_pr_review_flow(tmp_path):

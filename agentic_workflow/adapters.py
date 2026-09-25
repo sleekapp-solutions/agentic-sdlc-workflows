@@ -21,7 +21,7 @@ import subprocess
 import tempfile
 import tomllib
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 
@@ -33,6 +33,121 @@ _RUN_CODEX_CONFIGURATION: ContextVar[Dict[str, str] | None] = ContextVar(
 )
 
 AGENT_PROVIDERS = {"codex", "copilot"}
+
+
+class TicketLookupError(RuntimeError):
+    """Base class for Jira lookup failures with an explicit retry policy."""
+
+    retryable = False
+
+
+class TicketMcpNotConfiguredError(TicketLookupError):
+    def __init__(self, provider_label: str, server_name: str) -> None:
+        super().__init__(
+            f"{provider_label} has no configured Jira MCP server named '{server_name}'."
+        )
+
+
+class TicketNotFoundError(TicketLookupError):
+    """The configured Jira identity could not retrieve the requested issue."""
+
+    def __init__(self, ticket_key: str) -> None:
+        super().__init__(
+            f"The {ticket_key} key may be invalid, deleted, moved, or inaccessible "
+            "to the configured Atlassian MCP identity."
+        )
+
+
+class TicketMcpAccessError(TicketLookupError):
+    def __init__(self, ticket_key: str, detail: str = "") -> None:
+        self.detail = detail
+        super().__init__(
+            f"The Atlassian MCP connection is configured, but its identity was not authorized "
+            f"to retrieve {ticket_key}."
+        )
+
+
+class TicketMcpUnavailableError(TicketLookupError):
+    retryable = True
+
+    def __init__(self, ticket_key: str, detail: str = "") -> None:
+        self.detail = detail
+        super().__init__(
+            f"The Atlassian MCP connection could not complete the lookup for {ticket_key}."
+        )
+
+
+class TicketLookupResponseError(TicketLookupError):
+    retryable = True
+
+    def __init__(self, detail: str) -> None:
+        self.detail = detail
+        super().__init__("The Atlassian MCP returned an incomplete or unrecognized ticket response.")
+
+
+def _ticket_lookup_schema() -> Dict[str, Any]:
+    """Allow the MCP lookup to report absence without inventing ticket fields."""
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "required": ["status", "key", "summary", "description", "issue_type", "url", "error_detail"],
+        "properties": {
+            "status": {
+                "type": "string",
+                "enum": ["found", "not_found", "permission_denied", "unavailable"],
+            },
+            "key": {"type": "string"},
+            "summary": {"type": "string"},
+            "description": {"type": "string"},
+            "issue_type": {"type": "string"},
+            "url": {"type": "string"},
+            "error_detail": {"type": "string"},
+        },
+    }
+
+
+def _resolved_ticket(ticket_key: str, result: Dict[str, Any]) -> Dict[str, Any]:
+    status = result.get("status")
+    if status is None and isinstance(result.get("found"), bool):
+        status = "found" if result["found"] else "not_found"
+    detail = result.get("error_detail", "")
+    detail = detail if isinstance(detail, str) else ""
+    if status == "not_found":
+        raise TicketNotFoundError(ticket_key)
+    if status == "permission_denied":
+        raise TicketMcpAccessError(ticket_key, detail)
+    if status == "unavailable":
+        raise TicketMcpUnavailableError(ticket_key, detail)
+    if status != "found":
+        raise TicketLookupResponseError(f"Unexpected lookup status: {status!r}")
+    ticket = dict(result)
+    ticket.pop("found", None)
+    ticket.pop("status", None)
+    ticket.pop("error_detail", None)
+    required = ("key", "summary", "issue_type", "url")
+    missing = [field for field in required if not isinstance(ticket.get(field), str) or not ticket[field].strip()]
+    if missing:
+        raise TicketLookupResponseError("Missing required fields: " + ", ".join(missing))
+    return ticket
+
+
+def _ticket_mcp_server(provider: str) -> str:
+    return (
+        os.getenv("WORKFLOW_COPILOT_TICKET_MCP_SERVER", "atlassian").strip()
+        if provider == "copilot"
+        else "atlassian"
+    )
+
+
+def _require_ticket_mcp(provider: str) -> str:
+    server_name = _ticket_mcp_server(provider)
+    provider_label = "GitHub Copilot CLI" if provider == "copilot" else "Codex CLI"
+    if not server_name:
+        raise TicketMcpNotConfiguredError(provider_label, "<empty>")
+    configured = configured_mcp_servers(provider)
+    if not any(server_name.lower() in name.lower() for name in configured):
+        raise TicketMcpNotConfiguredError(provider_label, server_name)
+    return server_name
 
 
 def _active_workflow_configuration() -> Dict[str, str]:
@@ -64,6 +179,8 @@ class JiraRestClient(TicketClient):
             with urlopen(request, timeout=20) as response:
                 issue = json.load(response)
         except HTTPError as error:
+            if error.code == 404:
+                raise TicketNotFoundError(ticket_key) from error
             raise RuntimeError(f"Could not fetch Jira ticket {ticket_key}: HTTP {error.code}") from error
         fields = issue["fields"]
         description = fields.get("description")
@@ -372,27 +489,19 @@ class CodexMcpTicketClient(TicketClient):
         self.agent = CodexJsonAgent(repo_root)
 
     def fetch(self, ticket_key: str) -> Dict[str, Any]:
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["key", "summary", "description", "issue_type", "url"],
-            "properties": {
-                "key": {"type": "string", "minLength": 1},
-                "summary": {"type": "string", "minLength": 1},
-                "description": {"type": "string"},
-                "issue_type": {"type": "string", "minLength": 1},
-                "url": {"type": "string", "minLength": 1},
-            },
-        }
-        return self.agent.run(
+        result = self.agent.run(
             (
                 f"Use only the configured Atlassian MCP tool to retrieve Jira ticket {ticket_key}. "
+                "Set `status` to `found`, `not_found`, `permission_denied`, or `unavailable` based only on the "
+                "tool result. For any status except `found`, leave ticket fields empty and put a short factual "
+                "tool error in `error_detail`; do not guess, search for a substitute, or continue with planning. "
                 "Read the issue's actual Jira Summary field and place that exact non-empty value in "
                 "`summary`; never use a blank placeholder or infer it from the description. "
                 "Do not edit files or call any write tool. Return the requested JSON exactly."
             ),
-            schema,
+            _ticket_lookup_schema(),
         )
+        return _resolved_ticket(ticket_key, result)
 
 
 class LocalMcpTicketClient(CodexMcpTicketClient):
@@ -402,27 +511,23 @@ class LocalMcpTicketClient(CodexMcpTicketClient):
         self.agent = _structured_agent(repo_root)
 
     def fetch(self, ticket_key: str) -> Dict[str, Any]:
-        schema = {
-            "type": "object",
-            "additionalProperties": False,
-            "required": ["key", "summary", "description", "issue_type", "url"],
-            "properties": {
-                "key": {"type": "string", "minLength": 1},
-                "summary": {"type": "string", "minLength": 1},
-                "description": {"type": "string"},
-                "issue_type": {"type": "string", "minLength": 1},
-                "url": {"type": "string", "minLength": 1},
-            },
-        }
+        provider = _active_workflow_configuration().get("provider", "codex")
+        _require_ticket_mcp(provider)
+        schema = _ticket_lookup_schema()
         prompt = (
             f"Use only the configured Atlassian MCP tool to retrieve Jira ticket {ticket_key}. "
+            "Set `status` to `found`, `not_found`, `permission_denied`, or `unavailable` based only on the "
+            "tool result. For any status except `found`, leave ticket fields empty and put a short factual "
+            "tool error in `error_detail`; do not guess, search for a substitute, or continue with planning. "
             "Read the issue's actual Jira Summary field and place that exact non-empty value in "
             "`summary`; never use a blank placeholder or infer it from the description. "
             "Do not edit files or call any write tool."
         )
         if isinstance(self.agent, CopilotJsonAgent):
-            return self.agent.run(prompt, schema, allow_ticket_mcp=True)
-        return self.agent.run(prompt + " Return the requested JSON exactly.", schema)
+            result = self.agent.run(prompt, schema, allow_ticket_mcp=True)
+        else:
+            result = self.agent.run(prompt + " Return the requested JSON exactly.", schema)
+        return _resolved_ticket(ticket_key, result)
 
 
 class CodexPlanner(Planner):
@@ -479,7 +584,7 @@ class GitHubCliPullRequestClient(PullRequestClient):
         return result.stdout
 
     def fetch(self, number: int) -> Dict[str, Any]:
-        fields = "number,title,body,url,state,isDraft,author,baseRefName,headRefName,additions,deletions,changedFiles,mergeable,reviewDecision"
+        fields = "number,title,body,url,state,isDraft,author,baseRefName,headRefName,headRefOid,additions,deletions,changedFiles,mergeable,reviewDecision"
         try:
             return json.loads(self._run("pr", "view", str(number), "--json", fields))
         except json.JSONDecodeError as error:
@@ -487,6 +592,46 @@ class GitHubCliPullRequestClient(PullRequestClient):
 
     def diff(self, number: int) -> str:
         return self._run("pr", "diff", str(number), "--patch")
+
+    def publish_review(
+        self, number: int, event: str, body: str, findings: List[Dict[str, Any]], pull_request: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Create one explicit GitHub review, including selected inline findings."""
+        event_map = {"approve": "APPROVE", "request_changes": "REQUEST_CHANGES", "comment": "COMMENT"}
+        if event not in event_map:
+            raise ValueError("Review event must be approve, request_changes, or comment")
+        commit_id = pull_request.get("headRefOid")
+        if not isinstance(commit_id, str) or not commit_id:
+            raise RuntimeError("GitHub did not return the pull request head commit needed to publish a review")
+        inline_comments = []
+        general_findings = []
+        for finding in findings:
+            path, line, finding_body = finding.get("path"), finding.get("line"), finding.get("body")
+            if isinstance(path, str) and path and isinstance(line, int) and line > 0 and isinstance(finding_body, str) and finding_body:
+                inline_comments.append({"path": path, "line": line, "side": "RIGHT", "body": finding_body})
+            elif isinstance(finding_body, str) and finding_body:
+                title = finding.get("title")
+                general_findings.append(f"- {title}: {finding_body}" if isinstance(title, str) and title else f"- {finding_body}")
+        if general_findings:
+            body = body.rstrip() + "\n\n### Additional findings\n" + "\n".join(general_findings)
+        payload = {"commit_id": commit_id, "event": event_map[event], "body": body, "comments": inline_comments}
+        result = subprocess.run(
+            ["gh", "api", "--method", "POST", f"repos/{{owner}}/{{repo}}/pulls/{number}/reviews", "--input", "-"],
+            cwd=self.repo_root,
+            text=True,
+            input=json.dumps(payload),
+            capture_output=True,
+            timeout=60,
+            env=_codex_environment(),
+            check=False,
+        )
+        if result.returncode:
+            raise RuntimeError(result.stderr.strip() or "GitHub review publication failed")
+        try:
+            response = json.loads(result.stdout)
+        except json.JSONDecodeError as error:
+            raise RuntimeError("GitHub did not return a valid published review response") from error
+        return {"id": response.get("id"), "state": response.get("state"), "url": response.get("html_url")}
 
 
 class CodexPullRequestReviewer(PullRequestReviewer):

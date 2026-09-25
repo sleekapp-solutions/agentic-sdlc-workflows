@@ -1,7 +1,7 @@
 """Local-only browser UI for starting and reviewing workflow runs.
 
 The UI provides a human-friendly front end for both Jira delivery and
-read-only pull-request review.  It exposes the selected repository, provider,
+pull-request review with an explicit publication gate. It exposes the selected repository, provider,
 safe environment diagnostics, run progress, and LangGraph approval interrupts.
 The server deliberately binds to loopback by default: credentials remain in
 the server process and the browser receives workflow state, never secrets.
@@ -30,7 +30,18 @@ from langgraph.types import Command
 from .jira_delivery import build_graph
 from .git_ops import GitOperations
 from .pr_review_graph import build_pr_review_graph
-from .adapters import AGENT_PROVIDERS, agent_workflow_configuration, configured_mcp_servers, use_workflow_configuration
+from .adapters import (
+    AGENT_PROVIDERS,
+    TicketLookupError,
+    TicketLookupResponseError,
+    TicketMcpAccessError,
+    TicketMcpNotConfiguredError,
+    TicketMcpUnavailableError,
+    TicketNotFoundError,
+    agent_workflow_configuration,
+    configured_mcp_servers,
+    use_workflow_configuration,
+)
 
 
 TICKET_KEY_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]*-\d+$")
@@ -94,6 +105,41 @@ def workflow_usage_estimate(state: Dict[str, Any], flow: str) -> Dict[str, Any]:
 def explain_failure(stage: str, error: Exception) -> Dict[str, str]:
     """Turn low-level workflow failures into an actionable local UI message."""
     error_text = str(error)
+    if stage == "fetching_ticket" and isinstance(error, TicketMcpNotConfiguredError):
+        return {
+            "title": "Jira MCP is not configured",
+            "summary": error_text,
+            "next_step": "Configure the named Jira/Atlassian MCP server for the selected agent provider, then start a new run.",
+            "technical_detail": "",
+        }
+    if stage == "fetching_ticket" and isinstance(error, TicketMcpAccessError):
+        return {
+            "title": "Jira access was denied",
+            "summary": error_text,
+            "next_step": "Reconnect the Atlassian MCP identity or grant it access to this Jira project, then start a new run.",
+            "technical_detail": error.detail,
+        }
+    if stage == "fetching_ticket" and isinstance(error, TicketMcpUnavailableError):
+        return {
+            "title": "Jira lookup is temporarily unavailable",
+            "summary": error_text,
+            "next_step": "Check the MCP service or network connection, then retry the ticket lookup.",
+            "technical_detail": error.detail,
+        }
+    if stage == "fetching_ticket" and isinstance(error, TicketLookupResponseError):
+        return {
+            "title": "Jira returned an invalid response",
+            "summary": error_text,
+            "next_step": "Retry once. If it repeats, check or reconnect the Jira MCP integration.",
+            "technical_detail": error.detail,
+        }
+    if stage == "fetching_ticket" and isinstance(error, TicketNotFoundError):
+        return {
+            "title": "Jira ticket was not found",
+            "summary": error_text,
+            "next_step": "Check the ticket key or the configured Atlassian MCP identity before starting a new run.",
+            "technical_detail": "",
+        }
     if stage == "fetching_ticket" and "no usable ticket title" in error_text:
         return {
             "title": "Ticket title was missing from the Atlassian response",
@@ -127,12 +173,38 @@ def explain_failure(stage: str, error: Exception) -> Dict[str, str]:
             "Code review and validation completed, but publication did not finish.",
             "Review the technical detail below. The branch may already be pushed, so retry publication before rerunning implementation.",
         ),
+        "publishing_review": (
+            "Pull-request review could not be published",
+            "The local review was ready, but GitHub did not accept the explicitly approved publication.",
+            "Review the technical detail below, then retry publication before generating a new review.",
+        ),
     }
     title, summary, next_step = guidance.get(
         stage,
         ("Workflow stopped", "The workflow stopped before it could reach the next stage.", "Review the technical detail below and retry when the cause is resolved."),
     )
     return {"title": title, "summary": summary, "next_step": next_step, "technical_detail": error_text}
+
+
+def retry_target(flow: str, stage: str, state: Dict[str, Any]) -> str | None:
+    """Return the single safe graph node to re-run after a known failed stage."""
+    if flow == "jira_delivery":
+        if state.get("status") == "validation_failed":
+            return "validate"
+        return {
+            "fetching_ticket": "fetch_ticket",
+            "planning": "make_plan",
+            "implementing": "implement",
+            "validating": "validate",
+            "publishing": "publish",
+        }.get(stage)
+    if flow == "pr_review":
+        return {
+            "fetching_pull_request": "fetch_pull_request",
+            "reviewing_pull_request": "review_pull_request",
+            "publishing_review": "publish_review",
+        }.get(stage)
+    return None
 
 
 def _sanitized_origin(repo_root: Path) -> str | None:
@@ -219,13 +291,26 @@ class WorkflowRuntime:
                 "events": list(record["events"]),
                 "error": record.get("error"),
                 "failure": record.get("failure"),
+                "retry": {
+                    "available": bool(record.get("retry_target")),
+                    "target": record.get("retry_target"),
+                },
             }
             return response
 
-    def _execute(self, run_id: str, input_state: Dict[str, Any], decision: Dict[str, Any] | None = None) -> None:
+    def _execute(
+        self,
+        run_id: str,
+        input_state: Dict[str, Any],
+        decision: Dict[str, Any] | None = None,
+        retry_from: str | None = None,
+    ) -> None:
         def report(stage: str, message: str) -> None:
             self._event(run_id, stage, message)
 
+        graph = None
+        factory = None
+        config = {"configurable": {"thread_id": run_id}}
         try:
             with self._lock:
                 flow = self._runs[run_id]["flow"]
@@ -234,8 +319,11 @@ class WorkflowRuntime:
                 with self._graph() as checkpointer:
                     factory = self.graph_factory if flow == "jira_delivery" else self.pr_review_graph_factory
                     graph = factory(self.repo_root, report=report).compile(checkpointer=checkpointer)
-                    config = {"configurable": {"thread_id": run_id}}
-                    result = graph.invoke(Command(resume=decision), config=config) if decision else graph.invoke(input_state, config=config)
+                    if retry_from:
+                        graph.update_state(config, {"retry_target": retry_from}, as_node="retry_request")
+                        result = graph.invoke(None, config=config)
+                    else:
+                        result = graph.invoke(Command(resume=decision), config=config) if decision else graph.invoke(input_state, config=config)
             with self._lock:
                 self._runs[run_id]["response"] = workflow_response(run_id, result)
                 state = self._runs[run_id]["response"]["state"]
@@ -248,17 +336,44 @@ class WorkflowRuntime:
                 message = "Ticket fetch, planning, implementation, and validation completed; no new files differ from the run start."
             elif phase == "validation_failed":
                 message = "Implementation completed, but validation failed; no draft PR was created."
+            with self._lock:
+                self._runs[run_id]["retry_target"] = retry_target(
+                    self._runs[run_id]["flow"], self._runs[run_id]["stage"], state
+                )
             self._event(run_id, phase, message)
         except Exception as error:  # Keep background errors visible in the local UI.
             with self._lock:
                 record = self._runs[run_id]
+                failed_stage = record["stage"]
+                if graph is not None and factory is not None:
+                    try:
+                        # The execution checkpointer's context has closed while
+                        # unwinding the failed graph call. Reopen the database
+                        # before recovering the last successful node state.
+                        with self._graph() as recovery_checkpointer:
+                            recovery_graph = factory(self.repo_root).compile(checkpointer=recovery_checkpointer)
+                            checkpoint = recovery_graph.get_state(config)
+                        record["response"] = workflow_response(run_id, dict(checkpoint.values))
+                    except Exception:
+                        pass
                 record["running"] = False
                 record["error"] = str(error)
-                record["failure"] = explain_failure(record["stage"], error)
+                record["failure"] = explain_failure(failed_stage, error)
+                record["retry_target"] = (
+                    None
+                    if isinstance(error, TicketLookupError) and not error.retryable
+                    else retry_target(record["flow"], failed_stage, record["response"]["state"])
+                )
             self._event(run_id, "failed", "Workflow stopped: " + str(error))
 
-    def _launch(self, run_id: str, input_state: Dict[str, Any], decision: Dict[str, Any] | None = None) -> Dict[str, Any]:
-        threading.Thread(target=self._execute, args=(run_id, input_state, decision), daemon=True).start()
+    def _launch(
+        self,
+        run_id: str,
+        input_state: Dict[str, Any],
+        decision: Dict[str, Any] | None = None,
+        retry_from: str | None = None,
+    ) -> Dict[str, Any]:
+        threading.Thread(target=self._execute, args=(run_id, input_state, decision, retry_from), daemon=True).start()
         return self._response(run_id)
 
     @staticmethod
@@ -301,6 +416,7 @@ class WorkflowRuntime:
                 "model": model_configuration,
                 "usage": {"kind": "payload_estimate", "note": "Available after the first agent stage completes.", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "stages": []},
                 "failure": None,
+                "retry_target": None,
                 "running": True,
                 "stage": "starting",
                 "events": [{"at": time.strftime("%H:%M:%S"), "stage": "starting", "message": "Delivery run started"}],
@@ -327,6 +443,7 @@ class WorkflowRuntime:
                 "model": model_configuration,
                 "usage": {"kind": "payload_estimate", "note": "Available after the PR review completes.", "input_tokens": 0, "output_tokens": 0, "total_tokens": 0, "stages": []},
                 "failure": None,
+                "retry_target": None,
                 "running": True,
                 "stage": "starting",
                 "events": [{"at": time.strftime("%H:%M:%S"), "stage": "starting", "message": "Pull-request review started"}],
@@ -345,8 +462,26 @@ class WorkflowRuntime:
                 raise ValueError("This workflow is already running")
             record["running"] = True
             record["error"] = None
+            record["retry_target"] = None
         self._event(run_id, "resuming", "Applying your decision")
         return self._launch(run_id, {}, decision)
+
+    def retry(self, run_id: str) -> Dict[str, Any]:
+        with self._lock:
+            record = self._runs.get(run_id)
+            if not record:
+                raise ValueError("Unknown local run ID")
+            if record["running"]:
+                raise ValueError("This workflow is already running")
+            target = record.get("retry_target")
+            if not target:
+                raise ValueError("This run has no retryable failed step")
+            record["running"] = True
+            record["error"] = None
+            record["failure"] = None
+            record["retry_target"] = None
+        self._event(run_id, "retrying", f"Retrying {target.replace('_', ' ')}")
+        return self._launch(run_id, {}, retry_from=target)
 
     def status(self, run_id: str) -> Dict[str, Any]:
         return self._response(run_id)
@@ -430,6 +565,9 @@ class LocalUiApplication:
             elif method == "POST" and path.startswith("/api/runs/") and path.endswith("/resume"):
                 run_id = path.removeprefix("/api/runs/").removesuffix("/resume").strip("/")
                 response = self.runtime.resume(run_id, self._body(environ))
+            elif method == "POST" and path.startswith("/api/runs/") and path.endswith("/retry"):
+                run_id = path.removeprefix("/api/runs/").removesuffix("/retry").strip("/")
+                response = self.runtime.retry(run_id)
             else:
                 return self._respond(start_response, "404 Not Found", "Not found", "text/plain; charset=utf-8")
             return self._respond(start_response, "200 OK", json.dumps(response), "application/json; charset=utf-8")
@@ -459,19 +597,21 @@ async function request(url, payload){ const options=payload===undefined ? {} : {
 function escapeHtml(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML}
 function formatTokens(value){return Number(value||0).toLocaleString()}
 function renderDiff(diff){return diff.split('\n').map(line=>{let kind='context';if(line.startsWith('diff ')||line.startsWith('index ')||line.startsWith('+++')||line.startsWith('---'))kind='meta';else if(line.startsWith('@@'))kind='hunk';else if(line.startsWith('+'))kind='added';else if(line.startsWith('-'))kind='removed';return '<span class="diff-line '+kind+'">'+escapeHtml(line||' ')+'</span>'}).join('')}
-const timelineSteps={jira_delivery:['Ticket','Plan','Implement','Validate','Draft PR'],pr_review:['Pull request','Analyze patch','Review results']};
-function activeSteps(stage,flow){ const stepByStage=flow==='pr_review'?{starting:0,fetching_pull_request:0,reviewing_pull_request:1,awaiting_pr_review:2,pr_review:2,resuming:2,pr_review_acknowledged:2,pr_review_dismissed:2}:{starting:0,fetching_ticket:0,planning:1,awaiting_plan_review:1,plan_review:1,resuming:1,preparing_workspace:2,implementing:2,validating:3,awaiting_push_review:3,push_review:3,publishing:4,published:4}; const index=stepByStage[stage]??-1; document.querySelector('#timeline').innerHTML=(timelineSteps[flow]||timelineSteps.jira_delivery).map((step,i)=>'<span class="step '+(index>=0&&i<=index?'active':'')+'">'+step+'</span>').join(''); }
+const timelineSteps={jira_delivery:['Ticket','Plan','Implement','Validate','Draft PR'],pr_review:['Pull request','Analyze patch','Publish review']};
+function activeSteps(stage,flow){ const stepByStage=flow==='pr_review'?{starting:0,fetching_pull_request:0,reviewing_pull_request:1,awaiting_pr_review:2,pr_review:2,resuming:2,publishing_review:2,pr_review_published:2,pr_review_dismissed:2}:{starting:0,fetching_ticket:0,planning:1,awaiting_plan_review:1,plan_review:1,resuming:1,preparing_workspace:2,implementing:2,validating:3,awaiting_push_review:3,push_review:3,publishing:4,published:4}; const index=stepByStage[stage]??-1; document.querySelector('#timeline').innerHTML=(timelineSteps[flow]||timelineSteps.jira_delivery).map((step,i)=>'<span class="step '+(index>=0&&i<=index?'active':'')+'">'+step+'</span>').join(''); }
 function stopPolling(){ if(poller){clearInterval(poller);poller=null} }
 function startPolling(){ if(poller||!run?.run_id) return; poller=setInterval(async()=>{try{render(await request('/api/runs/'+run.run_id))}catch(error){stopPolling();actions.innerHTML='<p class="error">'+escapeHtml(error.message)+'</p>'}},1000) }
-function render(data){ run=data; runPanel.style.display='block'; const state=data.state||{}, runStatus=data.run||{}, flow=runStatus.flow||'jira_delivery', phase=data.phase||runStatus.stage||state.status||'complete'; const ticketTitle=String(state.ticket?.summary||'').trim(); document.querySelector('#phase').textContent=phase.replaceAll('_',' ')+(runStatus.running?' · live':''); document.querySelector('#title').textContent=state.ticket ? state.ticket.key+(ticketTitle?' · '+ticketTitle:' · Jira title unavailable') : (state.pull_request ? 'PR #'+state.pull_request.number+' · '+state.pull_request.title : flow==='pr_review'?'Pull-request review':'Delivery run'); activeSteps(runStatus.stage||phase,flow);
- const plan=state.plan ? '<h3>Proposed plan</h3><pre>'+escapeHtml(JSON.stringify(state.plan,null,2))+'</pre>' : ''; const validation=state.validation ? '<h3>Validation</h3><pre>'+escapeHtml(JSON.stringify(state.validation,null,2))+'</pre>' : ''; const implementation=state.implementation ? '<h3>Implementation result</h3><pre>'+escapeHtml((state.implementation.stdout||'No implementation output was captured.')+(state.implementation.stderr?'\n\nStderr:\n'+state.implementation.stderr:''))+'</pre>' : ''; const review=state.review ? '<h3>Code-review report <span class="badge">'+escapeHtml(state.review.verdict)+'</span></h3><p>'+escapeHtml(state.review.summary)+'</p>'+(state.review.findings||[]).map(f=>'<section class="validation-failure"><h3>'+escapeHtml(f.severity)+' · '+escapeHtml(f.title)+'</h3><p>'+escapeHtml(f.body)+'</p><p>'+escapeHtml(f.path)+(f.line?' : '+f.line:'')+'</p></section>').join('')+'<h4>Suggested verification</h4><pre>'+escapeHtml((state.review.tests_to_run||[]).join('\n')||'No additional tests suggested.')+'</pre>' : ''; const failures=(state.validation?.results||[]).filter(result=>result.exit_code!==0); const failure=failures.length?'<section class="validation-failure" role="alert"><h3>Validation failed</h3><p>'+failures.length+' command'+(failures.length===1?'':'s')+' failed. A draft PR was not created.</p>'+failures.map(result=>'<h4>'+escapeHtml(result.command)+'</h4><pre>'+escapeHtml((result.output||'No output was captured.').split('\n').slice(-18).join('\n'))+'</pre>').join('')+'</section>':''; const noChanges=state.status==='no_run_changes'?'<section class="outcome-note" role="status"><h3>Implementation finished without new files</h3><p><strong>Ticket fetch, planning, implementation, and validation completed.</strong> This is not a Jira-fetch failure.</p><p>No tracked or untracked file differs from the snapshot taken when this run began, so the workflow cannot safely create a draft PR.</p><p>Review the implementation result below to see what the coding agent reported.</p></section>':''; const pr=state.pull_request_url ? '<p><a href="'+escapeHtml(state.pull_request_url)+'" target="_blank" rel="noreferrer">Open draft pull request</a></p>' : (state.pull_request?.url?'<p><a href="'+escapeHtml(state.pull_request.url)+'" target="_blank" rel="noreferrer">Open pull request</a></p>':''); const model=runStatus.model||{}, usage=runStatus.usage||{}, issue=runStatus.failure; const telemetry='<section class="run-info"><div><small>Agent provider</small><strong>'+escapeHtml(model.provider_label||'Local CLI')+'</strong></div><div><small>Model</small><strong>'+escapeHtml(model.model||'Automatic')+'</strong><small>'+escapeHtml(model.model_source||'local provider configuration')+'</small></div><div><small>Reasoning effort</small><strong>'+escapeHtml(model.reasoning_effort||'Automatic')+'</strong><small>'+escapeHtml(model.reasoning_effort_source||'local provider configuration')+'</small></div><div><small>Estimated payload tokens</small><strong>'+formatTokens(usage.total_tokens)+'</strong></div><div><small>Input / output</small><strong>'+formatTokens(usage.input_tokens)+' / '+formatTokens(usage.output_tokens)+'</strong></div><p>'+escapeHtml(usage.note||'Token estimate is available after the first agent stage completes.')+'</p></section>'; const issuePanel=issue?'<section class="validation-failure" role="alert"><h3>'+escapeHtml(issue.title)+'</h3><p>'+escapeHtml(issue.summary)+'</p><p><strong>Next step:</strong> '+escapeHtml(issue.next_step)+'</p><h4>Technical detail</h4><pre>'+escapeHtml(issue.technical_detail)+'</pre></section>':''; const events=(runStatus.events||[]).map(event=>'<li><time>'+escapeHtml(event.at)+'</time><strong>'+escapeHtml(event.stage.replaceAll('_',' '))+':</strong> '+escapeHtml(event.message)+'</li>').join(''); const current=runStatus.running?'<div class="live-progress" role="status"><span class="spinner" aria-hidden="true"></span><span>Running: '+escapeHtml((runStatus.stage||phase).replaceAll('_',' '))+'</span></div>':''; details.innerHTML=current+telemetry+issuePanel+failure+noChanges+'<h3>Execution events</h3><ul class="events">'+events+'</ul>'+plan+implementation+validation+review+pr+'<h3>Workflow state</h3><pre>'+escapeHtml(JSON.stringify(state,null,2))+'</pre>'; actions.innerHTML='';
+ function render(data){ run=data; runPanel.style.display='block'; const state=data.state||{}, runStatus=data.run||{}, flow=runStatus.flow||'jira_delivery', phase=data.phase||runStatus.stage||state.status||'complete'; const ticketTitle=String(state.ticket?.summary||'').trim(); document.querySelector('#phase').textContent=phase.replaceAll('_',' ')+(runStatus.running?' · live':''); document.querySelector('#title').textContent=state.ticket ? state.ticket.key+(ticketTitle?' · '+ticketTitle:' · Jira title unavailable') : (state.pull_request ? 'PR #'+state.pull_request.number+' · '+state.pull_request.title : flow==='pr_review'?'Pull-request review':'Delivery run'); activeSteps(runStatus.stage||phase,flow);
+ const plan=state.plan ? '<h3>Proposed plan</h3><pre>'+escapeHtml(JSON.stringify(state.plan,null,2))+'</pre>' : ''; const validation=state.validation ? '<h3>Validation</h3><pre>'+escapeHtml(JSON.stringify(state.validation,null,2))+'</pre>' : ''; const implementation=state.implementation ? '<h3>Implementation result</h3><pre>'+escapeHtml((state.implementation.stdout||'No implementation output was captured.')+(state.implementation.stderr?'\n\nStderr:\n'+state.implementation.stderr:''))+'</pre>' : ''; const review=state.review ? '<h3>Code-review report <span class="badge">'+escapeHtml(state.review.verdict)+'</span></h3><p>'+escapeHtml(state.review.summary)+'</p>'+(state.review.findings||[]).map(f=>'<section class="validation-failure"><h3>'+escapeHtml(f.severity)+' · '+escapeHtml(f.title)+'</h3><p>'+escapeHtml(f.body)+'</p><p>'+escapeHtml(f.path)+(f.line?' : '+f.line:'')+'</p></section>').join('')+'<h4>Suggested verification</h4><pre>'+escapeHtml((state.review.tests_to_run||[]).join('\n')||'No additional tests suggested.')+'</pre>' : ''; const failures=(state.validation?.results||[]).filter(result=>result.exit_code!==0); const failure=failures.length?'<section class="validation-failure" role="alert"><h3>Validation failed</h3><p>'+failures.length+' command'+(failures.length===1?'':'s')+' failed. A draft PR was not created.</p>'+failures.map(result=>'<h4>'+escapeHtml(result.command)+'</h4><pre>'+escapeHtml((result.output||'No output was captured.').split('\n').slice(-18).join('\n'))+'</pre>').join('')+'</section>':''; const noChanges=state.status==='no_run_changes'?'<section class="outcome-note" role="status"><h3>Implementation finished without new files</h3><p><strong>Ticket fetch, planning, implementation, and validation completed.</strong> This is not a Jira-fetch failure.</p><p>No tracked or untracked file differs from the snapshot taken when this run began, so the workflow cannot safely create a draft PR.</p><p>Review the implementation result below to see what the coding agent reported.</p></section>':''; const pr=state.pull_request_url ? '<p><a href="'+escapeHtml(state.pull_request_url)+'" target="_blank" rel="noreferrer">Open draft pull request</a></p>' : (state.pull_request?.url?'<p><a href="'+escapeHtml(state.pull_request.url)+'" target="_blank" rel="noreferrer">Open pull request</a></p>':''); const model=runStatus.model||{}, usage=runStatus.usage||{}, issue=runStatus.failure; const telemetry='<section class="run-info"><div><small>Agent provider</small><strong>'+escapeHtml(model.provider_label||'Local CLI')+'</strong></div><div><small>Model</small><strong>'+escapeHtml(model.model||'Automatic')+'</strong><small>'+escapeHtml(model.model_source||'local provider configuration')+'</small></div><div><small>Reasoning effort</small><strong>'+escapeHtml(model.reasoning_effort||'Automatic')+'</strong><small>'+escapeHtml(model.reasoning_effort_source||'local provider configuration')+'</small></div><div><small>Estimated payload tokens</small><strong>'+formatTokens(usage.total_tokens)+'</strong></div><div><small>Input / output</small><strong>'+formatTokens(usage.input_tokens)+' / '+formatTokens(usage.output_tokens)+'</strong></div><p>'+escapeHtml(usage.note||'Token estimate is available after the first agent stage completes.')+'</p></section>'; const technicalDetail=issue?.technical_detail?'<h4>Technical detail</h4><pre>'+escapeHtml(issue.technical_detail)+'</pre>':''; const issuePanel=issue?'<section class="validation-failure" role="alert"><h3>'+escapeHtml(issue.title)+'</h3><p>'+escapeHtml(issue.summary)+'</p><p><strong>Next step:</strong> '+escapeHtml(issue.next_step)+'</p>'+technicalDetail+'</section>':''; const events=(runStatus.events||[]).map(event=>'<li><time>'+escapeHtml(event.at)+'</time><strong>'+escapeHtml(event.stage.replaceAll('_',' '))+':</strong> '+escapeHtml(event.message)+'</li>').join(''); const current=runStatus.running?'<div class="live-progress" role="status"><span class="spinner" aria-hidden="true"></span><span>Running: '+escapeHtml((runStatus.stage||phase).replaceAll('_',' '))+'</span></div>':''; details.innerHTML=current+telemetry+issuePanel+failure+noChanges+'<h3>Execution events</h3><ul class="events">'+events+'</ul>'+plan+implementation+validation+review+pr+'<h3>Workflow state</h3><pre>'+escapeHtml(JSON.stringify(state,null,2))+'</pre>'; actions.innerHTML='';
  if(runStatus.running){ actions.innerHTML='<p>Continuing local workflow…</p>'; startPolling(); return } stopPolling();
  if(phase==='plan_review'){ actions.innerHTML='<textarea id="feedback" placeholder="Feedback for a revised plan (optional)"></textarea><div class="actions"><button id="approve">Approve plan</button><button class="secondary" id="revise">Request revision</button><button class="danger" id="reject">Reject</button></div>'; document.querySelector('#approve').onclick=()=>resume({action:'approve'}); document.querySelector('#revise').onclick=()=>resume({action:'revise',feedback:document.querySelector('#feedback').value}); document.querySelector('#reject').onclick=()=>resume({action:'reject'}); }
  if(phase==='push_review'){ openDiffPath=null; const changes=state.file_changes||[]; if(!changes.length){actions.innerHTML='<section class="validation-failure" role="status"><h3>No files changed</h3><p>This run did not produce any files for review, so a draft PR cannot be created.</p></section>';return} const label={A:'Added',M:'Modified',D:'Deleted',R:'Renamed'}; actions.innerHTML='<h3>Review changes for the draft PR</h3><p>Select files only after inspecting their local Git diff.</p>'+changes.map(change=>'<label class="path"><input type="checkbox" value="'+escapeHtml(change.path)+'" checked><span class="badge '+(change.status==='D'?'deleted':'')+'">'+escapeHtml(label[change.status]||change.status)+'</span><span>'+escapeHtml(change.path)+'</span><button class="file-diff" type="button" data-path="'+escapeHtml(change.path)+'">View diff</button></label>').join('')+'<pre id="diffPanel" hidden></pre><div class="actions"><button id="publish">Create draft PR</button><button class="danger" id="reject">Reject publication</button></div>'; document.querySelectorAll('.file-diff').forEach(button=>button.onclick=()=>showDiff(button.dataset.path)); document.querySelector('#publish').onclick=()=>resume({action:'approve',paths:[...document.querySelectorAll('.path input:checked')].map(x=>x.value)}); document.querySelector('#reject').onclick=()=>resume({action:'reject'}); }
- if(phase==='pr_review'){ actions.innerHTML='<p>This review is local-only. It has not posted comments or changed GitHub.</p><div class="actions"><button id="approve">Acknowledge review</button><button class="secondary" id="reject">Dismiss</button></div>'; document.querySelector('#approve').onclick=()=>resume({action:'approve'}); document.querySelector('#reject').onclick=()=>resume({action:'reject'}); }
+ if(phase==='pr_review'){const findings=state.review?.findings||[];actions.innerHTML='<h3>Publish pull-request review</h3><p>This is an external GitHub action. Confirm the decision, review body, and selected comments before publishing.</p><label class="field">Review decision<select id="reviewEvent"><option value="approve">Approve</option><option value="request_changes" '+(state.review?.verdict==='request_changes'?'selected':'')+'>Request changes</option><option value="comment" '+(state.review?.verdict==='comment'?'selected':'')+'>Comment only</option></select></label><label class="field">Review summary<textarea id="reviewBody">'+escapeHtml(state.review?.summary||'')+'</textarea></label><h4>Inline comments</h4>'+(findings.length?findings.map((finding,index)=>'<label class="path"><input type="checkbox" value="'+index+'" checked><span class="badge">'+escapeHtml(finding.severity||'finding')+'</span><span>'+escapeHtml(finding.path||'General comment')+(finding.line?' : '+finding.line:'')+' · '+escapeHtml(finding.title||finding.body||'Finding')+'</span></label>').join(''):'<p>No generated findings to post inline.</p>')+'<div class="actions"><button id="publishReview">Publish review to GitHub</button><button class="secondary" id="dismissReview">Dismiss local review</button></div>';document.querySelector('#publishReview').onclick=()=>resume({action:'publish',event:document.querySelector('#reviewEvent').value,body:document.querySelector('#reviewBody').value,finding_indexes:[...document.querySelectorAll('.path input:checked')].map(input=>Number(input.value))});document.querySelector('#dismissReview').onclick=()=>resume({action:'dismiss'}); }
+ if(runStatus.retry?.available){const target=String(runStatus.retry.target||'failed step').replaceAll('_',' ');actions.innerHTML='<section class="validation-failure" role="status"><h3>Retry available</h3><p>Only <strong>'+escapeHtml(target)+'</strong> will run again. Earlier completed steps and approvals are preserved.</p><div class="actions"><button id="retry">Retry '+escapeHtml(target)+'</button></div></section>';document.querySelector('#retry').onclick=()=>retryRun()}
 }
 async function showDiff(path){ const panel=document.querySelector('#diffPanel'); if(openDiffPath===path){panel.hidden=true;openDiffPath=null;document.querySelectorAll('.file-diff').forEach(button=>button.textContent='View diff');return} openDiffPath=path; panel.hidden=false; document.querySelectorAll('.file-diff').forEach(button=>button.textContent=button.dataset.path===path?'Hide diff':'View diff'); panel.textContent='Loading '+path+'…'; try{const result=await request('/api/runs/'+run.run_id+'/diff?path='+encodeURIComponent(path)); panel.innerHTML=renderDiff(result.diff)}catch(error){openDiffPath=null;panel.textContent='Unable to load diff: '+error.message;document.querySelectorAll('.file-diff').forEach(button=>button.textContent='View diff')} }
 async function resume(decision){ actions.innerHTML='<p>Continuing local workflow…</p>'; try{render(await request('/api/runs/'+run.run_id+'/resume',decision))}catch(e){actions.innerHTML='<p class="error">'+escapeHtml(e.message)+'</p>'} }
+async function retryRun(){actions.innerHTML='<p>Retrying only the failed step…</p>';try{render(await request('/api/runs/'+run.run_id+'/retry',{}))}catch(e){actions.innerHTML='<p class="error">'+escapeHtml(e.message)+'</p>'}}
 function renderEnvironment(){if(!environmentData)return;const repo=environmentData.repository||{}, provider=environmentData.providers?.[providerPicker.value]||{}, github=environmentData.github_cli||{}, mcps=(provider.configured_mcps||[]);const mcpList=mcps.length?'<ul>'+mcps.map(name=>'<li>'+escapeHtml(name)+'</li>').join('')+'</ul>':'<strong class="warn">None found</strong>';environmentStatus.innerHTML='<div><small>Target repository</small><strong>'+escapeHtml(repo.name||'Unknown')+'</strong><small>'+escapeHtml(repo.origin||repo.path||'No origin remote')+'</small></div><div><small>GitHub CLI</small><strong class="'+(github.authenticated?'ok':'warn')+'">'+(github.authenticated?'Authenticated':github.available?'Not authenticated':'Not installed')+'</strong></div><div><small>'+escapeHtml(provider.label||'Agent provider')+'</small><strong class="'+(provider.installed?'ok':'warn')+'">'+(provider.installed?'Installed':'Not installed')+'</strong></div><div><small>Configured MCPs · '+escapeHtml(provider.label||'selected provider')+'</small>'+mcpList+'</div><div><small>Jira MCP · '+escapeHtml(provider.expected_jira_mcp||'atlassian')+'</small><strong class="'+(provider.jira_mcp_configured?'ok':'warn')+'">'+(provider.jira_mcp_configured?'Configured':'Not configured')+'</strong></div>';environmentNote.textContent=environmentData.note||''}
 function updateStartForm(){const review=flowPicker.value==='pr_review', copilot=providerPicker.value==='copilot', noEffort=effortPicker.querySelector('option[value="none"]');noEffort.disabled=!copilot&&modelPicker.value==='gpt-5.6-luna';if(noEffort.disabled&&effortPicker.value==='none')effortPicker.value='';if(copilot)effortPicker.value='';effortPicker.disabled=copilot;document.querySelector('#startTitle').textContent=review?'Start a pull-request review':'Start a delivery run';startValue.placeholder=review?'42':'PROJ-14';document.querySelector('#startValueLabel').firstChild.textContent=review?'Pull-request number':'Jira ticket key';document.querySelector('#startButton').textContent=review?'Review pull request':'Analyze ticket';const settings=providerDefaults[providerPicker.value];if(settings){modelPicker.placeholder='Default: '+(settings.model||'Automatic');defaultConfiguration.textContent=settings.provider_label+' defaults · Model: '+(settings.model||'Automatic')+' ('+(settings.model_source||'runtime')+') · Reasoning: '+(settings.reasoning_effort||'Automatic')+' ('+(settings.reasoning_effort_source||'runtime')+').'+(copilot?' Reasoning effort is managed by Copilot local settings.':'')}renderEnvironment()}
 async function loadDefaults(){try{const configuration=await request('/api/configuration');providerDefaults=configuration.providers||{};const selected=configuration.defaults?.provider||'codex';providerPicker.value=providerDefaults[selected]?selected:'codex';updateStartForm()}catch(error){defaultConfiguration.textContent='Local agent defaults could not be read. The selected CLI will use its automatic defaults.'}}

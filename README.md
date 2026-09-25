@@ -1,8 +1,8 @@
 # Agentic SDLC Workflows
 
 Local, human-approved workflows for taking a Jira ticket from plan to a draft
-pull request, or reviewing an existing GitHub pull request without posting
-comments. The project uses an authenticated local coding-agent CLI, keeps
+pull request, or reviewing an existing GitHub pull request and publishing an
+explicitly approved review. The project uses an authenticated local coding-agent CLI, keeps
 secrets out of graph state, and deliberately pauses before every material
 action.
 
@@ -10,49 +10,43 @@ action.
 > plug-and-play SDLC workflow tool. The default validation profile is Flutter;
 > other repositories can supply their own validation commands.
 
+For a vendor-neutral explanation of when to use an agent skill, an agentic
+workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Workflow](docs/agent-workflow-vs-skill.md).
+
 ## What it does
 
 | Flow | Input | What it can do | What it will not do automatically |
 | --- | --- | --- | --- |
 | Jira delivery | Jira key such as `PROJ-14` | Fetch ticket, draft a plan, implement after approval, validate, then create a draft PR after a second approval | Push, commit, or create a PR without explicit approval |
-| Pull-request review | GitHub PR number | Read the PR and patch, generate a structured local review, display it in the local UI | Change code, post comments, or alter GitHub |
+| Pull-request review | GitHub PR number | Read the PR and patch, generate a structured review, then publish an explicitly approved approval, change request, or comment | Change code or post any review without explicit approval |
 
 ## Flow diagrams
 
 ### Jira delivery
 
-```mermaid
-flowchart TD
-    start([Jira ticket]) --> ticket[Atlassian MCP: read ticket]
-    ticket --> plan[Selected local agent: structured plan]
-    plan --> planApproval{{Human approval}}
-    planApproval -->|Revise| plan
-    planApproval -->|Reject| stop([Stop])
-    planApproval -->|Approve| branch[Create/reuse agent branch]
-    branch --> implement[Selected local agent: implementation]
-    implement --> validate[Configured validation]
-    validate -->|Failed| failed([Stop])
-    validate -->|No changes| noChanges([Stop])
-    validate -->|Passed| pushApproval{{Human approval of paths + publication}}
-    pushApproval -->|Approve| publish[Commit, push, draft PR]
-    pushApproval -->|Reject| stop
-    publish --> done([Done])
-```
+![Jira delivery workflow](docs/graphs/jira_delivery.svg)
 
 The editable source is [docs/graphs/jira_delivery.mmd](docs/graphs/jira_delivery.mmd).
 
 ### Pull-request review
 
-```mermaid
-flowchart TD
-    start([PR number]) --> fetch[GitHub CLI: metadata + patch]
-    fetch --> review[Selected local agent: structured review]
-    review --> acknowledgement{{Human acknowledgement}}
-    acknowledgement -->|Acknowledge| done([Recorded locally])
-    acknowledgement -->|Dismiss| dismissed([Dismissed locally])
-```
+![Pull-request review workflow](docs/graphs/pr_review.svg)
 
 The editable source is [docs/graphs/pr_review.mmd](docs/graphs/pr_review.mmd).
+
+### Render the diagrams
+
+Mermaid CLI is installed as a local documentation dependency. Install the
+locked version and regenerate both SVGs with:
+
+```bash
+npm ci
+npm run docs:diagrams
+```
+
+The command renders `docs/graphs/jira_delivery.svg` and
+`docs/graphs/pr_review.svg`. Do not install Mermaid CLI globally; keeping it
+local makes diagram output reproducible for contributors and CI.
 
 ## What is LangGraph?
 
@@ -95,9 +89,8 @@ Install these on the machine that runs the workflow:
    No Jira API token is required by this project. Copilot uses the MCP server
    name in `WORKFLOW_COPILOT_TICKET_MCP_SERVER` (default: `atlassian`).
 5. For **pull-request review** and **draft-PR publication**: GitHub CLI
-   (`gh`) authenticated for the target repository. The review flow is
-   read-only; Jira delivery needs GitHub write permission only after you
-   approve publication.
+   (`gh`) authenticated for the target repository. Pull-request review needs
+   permission to submit reviews only after you explicitly approve publication.
 6. The target repository's validator. Flutter projects need `flutter` on
    `PATH`; other projects should set `WORKFLOW_VALIDATION_COMMANDS`.
 
@@ -181,8 +174,8 @@ ticket, agent, Git, and validator implementations.
 | --- | --- | --- |
 | Jira ticket retrieval | `LocalMcpTicketClient` | Uses the selected provider's Atlassian MCP connection and returns structured ticket fields. |
 | Planning | `LocalPlanner` | Runs the selected CLI in read-only structured-output mode. |
-| PR metadata and patch | `GitHubCliPullRequestClient` | Uses authenticated `gh` commands only; it never posts a review. |
-| PR review | `LocalPullRequestReviewer` | Sends the fetched PR metadata and patch to the selected provider, returning structured findings locally. |
+| PR metadata, patch, and review publication | `GitHubCliPullRequestClient` | Fetches through authenticated `gh`, then posts a review only after the final explicit approval. |
+| PR review | `LocalPullRequestReviewer` | Sends the fetched PR metadata and patch to the selected provider, returning structured findings for local selection and review. |
 | Implementation | `CommandImplementer` / `CopilotImplementer` | Selects Codex or Copilot by default after plan approval; a custom `IMPLEMENTATION_COMMAND` can replace it. |
 | Validation and publication | `ProjectValidator` / `GitOperations` | Runs the target repository's configured commands, then commits/pushes only after explicit path-level approval. |
 
@@ -233,7 +226,8 @@ means local configuration was found; a real Jira permission/connectivity check
 still occurs only when a delivery run starts.
 
 The Jira delivery flow pauses for plan approval and for the selected paths to
-be committed/pushed. The pull-request review flow never writes to GitHub.
+be committed/pushed. Pull-request review pauses before its one external write:
+publishing an approval, change request, or comment with selected findings.
 
 ## Run from the terminal
 
@@ -265,6 +259,14 @@ Run a local pull-request review:
 .venv/bin/agentic-workflows --repo "$TARGET_REPO" review-pr 42 --run-id pr-42-001
 ```
 
+Publish a reviewed pull request only after inspecting the generated findings:
+
+```bash
+.venv/bin/agentic-workflows --repo "$TARGET_REPO" resume --flow pr_review \
+  --run-id pr-42-001 \
+  --decision '{"action":"publish","event":"request_changes","body":"Please address the selected findings.","finding_indexes":[0,1]}'
+```
+
 ## LangGraph Studio
 
 Set the target and start the local Agent Server:
@@ -290,7 +292,8 @@ repository under `.agentic-workflow/`.
   publication.
 - Implementation is asked not to commit or push. Git publication occurs only
   after a human approves an explicit file list.
-- PR review is local-only and never posts review comments.
+- PR review posts nothing until a human explicitly chooses an outcome and the
+  selected findings to publish.
 - Token metrics in the UI are payload-size estimates, not billed usage.
 
 ## Future enhancements: plug-and-play roadmap
