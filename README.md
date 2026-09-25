@@ -48,7 +48,7 @@ agentic-workflows-ui
 The browser opens `http://127.0.0.1:8080`. Check the **Local environment**
 panel: anything marked as a warning is a missing prerequisite.
 
-Update later with `uv tool upgrade agentic-sdlc-workflows`.
+Update later by re-running the install command with `--force --reinstall`.
 
 ## Configuration
 
