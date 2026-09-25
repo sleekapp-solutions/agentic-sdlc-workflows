@@ -7,8 +7,8 @@ secrets out of graph state, and deliberately pauses before every material
 action.
 
 > Status: a local-first foundation for continued work toward a fully
-> plug-and-play SDLC workflow tool. The default validation profile is Flutter;
-> other repositories can supply their own validation commands.
+> plug-and-play SDLC workflow tool. Validation commands are detected from the
+> target repository's project type, or configured explicitly per repository.
 
 For a vendor-neutral explanation of when to use an agent skill, an agentic
 workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Workflow](docs/agent-workflow-vs-skill.md).
@@ -19,6 +19,51 @@ workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Work
 | --- | --- | --- | --- |
 | Jira delivery | Jira key such as `PROJ-14` | Fetch ticket, draft a plan, implement after approval, validate, then create a draft PR after a second approval | Push, commit, or create a PR without explicit approval |
 | Pull-request review | GitHub PR number | Read the PR and patch, generate a structured review, then publish an explicitly approved approval, change request, or comment | Change code or post any review without explicit approval |
+
+## Quick start
+
+### 1. Install the prerequisites
+
+- [Git](https://git-scm.com/) and [uv](https://docs.astral.sh/uv/) (uv installs Python if needed).
+- [GitHub CLI](https://cli.github.com/), then `gh auth login`.
+- One agent CLI, logged in: [Codex CLI](https://developers.openai.com/) (default) or
+  [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart) (`copilot login`).
+- For Jira delivery only: an Atlassian MCP server named `atlassian` in that agent's settings.
+- The target repository's toolchain (for example `flutter`, `npm`, `go`).
+
+### 2. Install the tool
+
+```bash
+uv tool install git+https://github.com/sleekapp-solutions/agentic-sdlc-workflows
+```
+
+If the command isn't found afterwards, run `uv tool update-shell` and open a new terminal.
+
+### 3. Run it in any repository
+
+```bash
+cd /path/to/your-repository
+agentic-workflows-ui
+```
+
+The browser opens `http://127.0.0.1:8080`. Check the **Local environment**
+panel: anything marked as a warning is a missing prerequisite.
+
+Update later with `uv tool upgrade agentic-sdlc-workflows`.
+
+## Configuration
+
+Settings are optional. Highest precedence first:
+
+1. Environment variables.
+2. `<repository>/.agentic-workflow.env`: per-repository validation commands and
+   provider/model choices only.
+3. `~/.config/agentic-workflows/.env`: your personal defaults. See
+   [.env.example](.env.example) for every option.
+4. `.env` in this project's checkout (development installs).
+
+A target repository's own `.env` is never read. Credentials stay in `gh` and
+the agent CLI, never in this tool.
 
 ## Flow diagrams
 
@@ -74,70 +119,6 @@ optional `dev` extra adds `langgraph-cli`, `langgraph-api`, and
 `langgraph-runtime-inmem` for LangGraph Studio (`langgraph dev`) and the test
 tooling.
 
-## Prerequisites
-
-Install these on the machine that runs the workflow:
-
-1. Python 3.11 or later.
-2. Git and a target repository with an `origin` remote.
-3. One authenticated local agent provider:
-   - [Codex CLI](https://developers.openai.com/) (the default), or
-   - [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart)
-     installed and authenticated with `copilot login`.
-4. For **Jira delivery**: an Atlassian MCP connection enabled and authorized
-   in the selected provider, with permission to read the target Jira issue.
-   No Jira API token is required by this project. Copilot uses the MCP server
-   name in `WORKFLOW_COPILOT_TICKET_MCP_SERVER` (default: `atlassian`).
-5. For **pull-request review** and **draft-PR publication**: GitHub CLI
-   (`gh`) authenticated for the target repository. Pull-request review needs
-   permission to submit reviews only after you explicitly approve publication.
-6. The target repository's validator. Flutter projects need `flutter` on
-   `PATH`; other projects should set `WORKFLOW_VALIDATION_COMMANDS`.
-
-MCP integrations are tools that extend model runs; the workflow restricts its
-Jira retrieval prompt to the configured Atlassian MCP connection. See the
-[official OpenAI MCP tools reference](https://developers.openai.com/api/reference/cli/resources/responses/methods/create)
-for the underlying tool model.
-
-## Install
-
-Create a project-local virtual environment, then choose the install level you
-need. Nothing is installed globally.
-
-```bash
-git clone <your-repository-url> agentic-sdlc-workflows
-cd agentic-sdlc-workflows
-python3 -m venv .venv
-.venv/bin/python -m pip install --upgrade pip
-
-# Local browser UI and terminal workflows, including LangGraph runtime.
-.venv/bin/pip install -e .
-
-# Optional: LangGraph Studio (`langgraph dev`) plus tests.
-.venv/bin/pip install -e '.[dev]'
-```
-
-Use either the runtime install or the `dev` install; the latter includes the
-runtime dependencies as well. You do not need a separate global LangGraph
-installation.
-
-Confirm the local integrations before the first real run:
-
-```bash
-codex --version
-copilot --version # only when using GitHub Copilot CLI
-gh auth status
-```
-
-If needed, create local-only overrides:
-
-```bash
-cp .env.example .env
-```
-
-Agent configuration, Atlassian credentials, and GitHub credentials stay
-outside this repository. Do not commit `.env`.
-
 ## Choose an agent provider
 
 The browser UI exposes an **Agent provider** selector for every run. Codex
@@ -187,34 +168,52 @@ configured Atlassian MCP server only for Jira retrieval, and uses only `write`
 and `shell` permissions for the approved implementation step. Credentials are
 not stored in LangGraph state or returned to the browser.
 
-## Configure a target repository
+## Validation commands
 
-The target repository is always explicit. Pass it to the local UI or CLI:
+After implementation, the Jira delivery flow runs the target repository's
+validation commands and only offers a draft PR if they pass. When
+`WORKFLOW_VALIDATION_COMMANDS` is not set, the commands are detected from files
+at the repository root. The first match wins:
 
-```bash
-TARGET_REPO=/absolute/path/to/your-repository
-```
+| Marker | Detected as | Commands |
+| --- | --- | --- |
+| `pubspec.yaml` with `sdk: flutter` | Flutter | `flutter analyze`, `flutter test` |
+| `pubspec.yaml` | Dart | `dart analyze`, `dart test` |
+| `package.json` | Node | `lint`, `typecheck`, and `test` scripts that exist, run with npm, pnpm, yarn, or bun according to the lockfile |
+| `go.mod` | Go | `go vet ./...`, `go test ./...` |
+| `Cargo.toml` | Rust | `cargo test` |
+| `Package.swift` | Swift package | `swift test` |
+| `gradlew` | Gradle | `./gradlew test` |
+| `pom.xml` | Maven | `mvn -q test` |
+| `pyproject.toml`, `setup.py`, `setup.cfg`, or `requirements.txt` | Python | `pytest`, using the repository's `.venv` or `venv` interpreter when present |
 
-For a non-Flutter project, add validation commands to `.env` using a
-semicolon-separated list:
+The detected profile appears in the UI's **Local environment** panel. If no
+profile matches and nothing is configured, a delivery run refuses to start
+before any agent work. Pull-request review never runs validation, so it works
+in any repository.
+
+To override detection, or for monorepos and projects not listed above, add a
+semicolon-separated list to a `.agentic-workflow.env` file in the target
+repository:
 
 ```dotenv
-WORKFLOW_VALIDATION_COMMANDS=npm test; npm run lint
+WORKFLOW_VALIDATION_COMMANDS=npm run lint; npm test
 ```
 
-The default remains:
-
-```text
-flutter analyze; flutter test
-```
+Because this file can be committed and shared, it may only set
+`WORKFLOW_VALIDATION_COMMANDS`, `WORKFLOW_AGENT_PROVIDER`, and the
+`WORKFLOW_CODEX_*` / `WORKFLOW_COPILOT_*` model and MCP-name settings. Other
+keys, including `IMPLEMENTATION_COMMAND` and credentials, are ignored there and
+belong in your user or checkout `.env`.
 
 ## Run the local UI
 
 ```bash
-.venv/bin/python -m agentic_workflow.local_ui --repo "$TARGET_REPO"
+agentic-workflows-ui              # current directory
+agentic-workflows-ui --repo PATH  # another repository
 ```
 
-Open `http://127.0.0.1:8080`. The UI is loopback-only. It lets you select the
+The browser opens `http://127.0.0.1:8080` automatically. The UI is loopback-only. It lets you select the
 flow, choose Codex CLI or GitHub Copilot CLI, optionally override the model,
 and inspect the resolved local defaults before starting.
 
@@ -231,16 +230,18 @@ publishing an approval, change request, or comment with selected findings.
 
 ## Run from the terminal
 
+Run these inside the target repository, or add `--repo PATH`.
+
 Start a Jira delivery run:
 
 ```bash
-.venv/bin/agentic-workflows --repo "$TARGET_REPO" start PROJ-14 --run-id proj-14-001
+agentic-workflows start PROJ-14 --run-id proj-14-001
 ```
 
 Resume after inspecting the plan:
 
 ```bash
-.venv/bin/agentic-workflows --repo "$TARGET_REPO" resume \
+agentic-workflows resume \
   --run-id proj-14-001 \
   --decision '{"action":"approve"}'
 ```
@@ -248,7 +249,7 @@ Resume after inspecting the plan:
 At the publication gate, explicitly approve only the intended changed files:
 
 ```bash
-.venv/bin/agentic-workflows --repo "$TARGET_REPO" resume \
+agentic-workflows resume \
   --run-id proj-14-001 \
   --decision '{"action":"approve","paths":["src/app.ts","test/app_test.ts"]}'
 ```
@@ -256,13 +257,13 @@ At the publication gate, explicitly approve only the intended changed files:
 Run a local pull-request review:
 
 ```bash
-.venv/bin/agentic-workflows --repo "$TARGET_REPO" review-pr 42 --run-id pr-42-001
+agentic-workflows review-pr 42 --run-id pr-42-001
 ```
 
 Publish a reviewed pull request only after inspecting the generated findings:
 
 ```bash
-.venv/bin/agentic-workflows --repo "$TARGET_REPO" resume --flow pr_review \
+agentic-workflows resume --flow pr_review \
   --run-id pr-42-001 \
   --decision '{"action":"publish","event":"request_changes","body":"Please address the selected findings.","finding_indexes":[0,1]}'
 ```
@@ -272,7 +273,7 @@ Publish a reviewed pull request only after inspecting the generated findings:
 Set the target and start the local Agent Server:
 
 ```bash
-WORKFLOW_REPO="$TARGET_REPO" .venv/bin/langgraph dev
+WORKFLOW_REPO=/path/to/your-repository .venv/bin/langgraph dev
 ```
 
 Studio exposes two graphs:
@@ -312,9 +313,8 @@ the approval model.
 - **Integration packs:** declarative Jira/Atlassian, GitHub, GitLab, Linear,
   and test/CI connectors with explicit read/write scopes and connection health
   checks. No integration should silently export repository or ticket content.
-- **Repository profiles:** selectable validation presets for Flutter, Node,
-  Python, iOS/Android, and custom projects, with project-local overrides and
-  a dry-run validator.
+- **Repository profiles:** monorepo-aware detection, Xcode and Android
+  presets beyond Gradle, and a dry-run validator.
 - **Workflow catalog:** a UI-driven flow picker with Jira delivery, PR review,
   bug triage, release readiness, dependency/security review, and reusable
   organization templates. Each flow should include its graph, inputs, and
@@ -332,12 +332,17 @@ the approval model.
   example repositories, a compatibility matrix, CI smoke tests, and release
   notes so the tool can be adopted without copying project internals.
 
-## Test
+## Development
 
 ```bash
+git clone https://github.com/sleekapp-solutions/agentic-sdlc-workflows
+cd agentic-sdlc-workflows
+uv venv && uv pip install -e '.[dev]'
+uv tool install --editable .    # optional: commands that track this checkout
 .venv/bin/python -m pytest
-.venv/bin/python -m compileall -q agentic_workflow
 ```
+
+The `dev` extra adds pytest and LangGraph Studio (`langgraph dev`).
 
 ## Project layout
 

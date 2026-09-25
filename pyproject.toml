@@ -24,6 +24,7 @@ dev = [
 
 [project.scripts]
 agentic-workflows = "agentic_workflow.cli:main"
+agentic-workflows-ui = "agentic_workflow.local_ui:main"
 
 [tool.pytest.ini_options]
 testpaths = ["workflow_tests"]
