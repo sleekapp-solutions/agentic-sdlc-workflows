@@ -284,7 +284,7 @@ def test_local_reviewer_ui_serves_its_browser_interface():
     assert "Agentic SDLC Workflows" in body
     assert "Credentials remain in the local process" in body
     assert "Pull-request review" in body
-    assert "Estimated payload tokens" in body
+    assert "payload-size estimates, not billed usage" in body
     assert "This is not a Jira-fetch failure" in body
     assert "GitHub Copilot CLI" in body
     assert "Agent provider" in body
