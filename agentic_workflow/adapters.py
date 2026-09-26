@@ -11,7 +11,6 @@ contracts.  Provider selection is scoped to one run rather than changing a
 developer's global agent settings.
 """
 
-import base64
 from contextlib import contextmanager
 from contextvars import ContextVar
 import json
@@ -22,8 +21,6 @@ import tempfile
 import tomllib
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.error import HTTPError
-from urllib.request import Request, urlopen
 
 from .contracts import Implementer, Planner, PullRequestClient, PullRequestReviewer, TicketClient
 
@@ -153,88 +150,6 @@ def _require_ticket_mcp(provider: str) -> str:
 def _active_workflow_configuration() -> Dict[str, str]:
     """Return this run's provider configuration without exposing credentials."""
     return _RUN_CODEX_CONFIGURATION.get() or agent_workflow_configuration()
-
-
-class JiraRestClient(TicketClient):
-    """Minimal Jira Cloud client; credentials never enter graph state."""
-
-    def __init__(self, base_url: str, email: str, api_token: str) -> None:
-        self.base_url = base_url.rstrip("/")
-        self.auth = base64.b64encode(f"{email}:{api_token}".encode()).decode()
-
-    @classmethod
-    def from_environment(cls) -> "JiraRestClient":
-        required = ("JIRA_BASE_URL", "JIRA_EMAIL", "JIRA_API_TOKEN")
-        missing = [name for name in required if not os.getenv(name)]
-        if missing:
-            raise RuntimeError("Missing Jira configuration: " + ", ".join(missing))
-        return cls(os.environ["JIRA_BASE_URL"], os.environ["JIRA_EMAIL"], os.environ["JIRA_API_TOKEN"])
-
-    def fetch(self, ticket_key: str) -> Dict[str, Any]:
-        request = Request(
-            f"{self.base_url}/rest/api/3/issue/{ticket_key}",
-            headers={"Authorization": f"Basic {self.auth}", "Accept": "application/json"},
-        )
-        try:
-            with urlopen(request, timeout=20) as response:
-                issue = json.load(response)
-        except HTTPError as error:
-            if error.code == 404:
-                raise TicketNotFoundError(ticket_key) from error
-            raise RuntimeError(f"Could not fetch Jira ticket {ticket_key}: HTTP {error.code}") from error
-        fields = issue["fields"]
-        description = fields.get("description")
-        # Jira Cloud can return ADF. Preserve it as JSON instead of losing requirements.
-        if isinstance(description, dict):
-            description = json.dumps(description)
-        return {
-            "key": issue["key"],
-            "summary": fields["summary"],
-            "description": description or "",
-            "issue_type": fields["issuetype"]["name"],
-            "url": f"{self.base_url}/browse/{issue['key']}",
-        }
-
-
-class OpenAIPlanner(Planner):
-    """Plans only; it cannot edit files or invoke shell commands."""
-
-    def __init__(self, model: str) -> None:
-        self.model = model
-
-    @classmethod
-    def from_environment(cls) -> "OpenAIPlanner":
-        if not os.getenv("OPENAI_API_KEY"):
-            raise RuntimeError("OPENAI_API_KEY is required to generate a plan")
-        return cls(os.getenv("OPENAI_MODEL", "gpt-5"))
-
-    def create(self, ticket: Dict[str, Any], feedback: Optional[str] = None) -> Dict[str, Any]:
-        from openai import OpenAI
-
-        prompt = {
-            "ticket": ticket,
-            "review_feedback": feedback or "",
-            "required_schema": {
-                "goal": "string",
-                "assumptions": ["string"],
-                "files_to_inspect": ["string"],
-                "implementation_steps": ["string"],
-                "tests": ["string"],
-                "risks": ["string"],
-            },
-        }
-        response = OpenAI().responses.create(
-            model=self.model,
-            instructions=(
-                "You are a software delivery planner. Return only valid JSON matching "
-                "required_schema. Do not claim work is done. Prefer existing project conventions."
-            ),
-            input=json.dumps(prompt),
-        )
-        try:
-            return json.loads(response.output_text)
-        except json.JSONDecodeError as error:
-            raise RuntimeError("Planner returned non-JSON output") from error
 
 
 def _codex_environment() -> Dict[str, str]:

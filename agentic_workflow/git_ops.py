@@ -72,17 +72,6 @@ class GitOperations:
             self._run("switch", "-c", branch)
         return branch
 
-    def candidate_paths(self) -> List[str]:
-        rows = self._run("status", "--porcelain=v1").splitlines()
-        paths = []
-        for row in rows:
-            path = row[3:]
-            if " -> " in path:
-                path = path.split(" -> ", 1)[1]
-            if path and not path.startswith(FORBIDDEN_PATHS):
-                paths.append(path)
-        return sorted(set(paths))
-
     def _changed_files(self) -> Dict[str, str]:
         """Return every tracked or untracked file currently different from HEAD."""
         changes: Dict[str, str] = {}
