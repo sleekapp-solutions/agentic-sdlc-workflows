@@ -1,0 +1,34 @@
+flowchart TD
+    start([New run]) --> context[Resolve repository, base branch, validation, guardrails]
+    context --> preflight[Check GitHub CLI auth and Jira MCP]
+    preflight -->|Missing access| failed[Record an accurate stage error]
+    preflight -->|Ready| ticket[Fetch ticket, acceptance criteria, branch name]
+    ticket --> plan[Agent creates plan, validation approach, review focus, PR summary]
+
+    plan --> planApproval{Plan decision}
+    planApproval -->|Revise with feedback| plan
+    planApproval -->|Reject| rejected([Stop: plan rejected])
+    planApproval -->|Approve| branch[Create or reuse ticket branch and isolated worktree]
+
+    branch --> implement[Agent implements in the worktree; configured validation runs]
+    implement --> impact[Assess Swift blast radius]
+    impact --> review[Agent reviews correctness, tests, wiring, standards]
+    review --> changeApproval{Change decision}
+    changeApproval -->|Revise with feedback and findings| implement
+    changeApproval -->|Approve| commit[Commit with Jira key; skip if clean]
+    commit --> pr[Push branch and open draft or ready PR]
+    changeApproval -->|Reject: nothing published| cleanup
+    pr --> cleanup[Remove clean worktree; keep branch]
+    cleanup --> done([Final status report])
+
+    stageFailure[Any agent, Git, or GitHub step failure] -.-> failed
+    failed --> retry[Retry only the failed step]
+
+    classDef action fill:#e8f0fe,stroke:#3667a6,color:#152033;
+    classDef decision fill:#fff4cc,stroke:#a46f00,color:#332500;
+    classDef success fill:#e4f6e9,stroke:#2f7d44,color:#12351c;
+    classDef stop fill:#f8e7e7,stroke:#a33d3d,color:#421919;
+    class context,preflight,ticket,plan,branch,implement,impact,review,commit,pr,cleanup,failed,retry action;
+    class planApproval,changeApproval decision;
+    class done success;
+    class rejected stop;

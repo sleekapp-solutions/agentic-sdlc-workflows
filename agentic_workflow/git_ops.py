@@ -181,3 +181,149 @@ class ProjectValidator:
             run = subprocess.run(command, cwd=self.repo_root, text=True, capture_output=True, check=False)
             results.append({"command": " ".join(command), "exit_code": run.returncode, "output": (run.stdout + run.stderr)[-6000:]})
         return {"passed": all(item["exit_code"] == 0 for item in results), "results": results}
+
+
+def _branch_slug(text: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "-", text.lower()).strip("-")
+
+
+def ticket_branch_name(ticket_key: str, summary: str) -> str:
+    """``feature/<key>-<first words of the summary>``, kept short and ref-safe."""
+    words = _branch_slug(summary).split("-")[:6]
+    name = "-".join([_branch_slug(ticket_key), *[word for word in words if word]])
+    return "feature/" + name[:60].rstrip("-")
+
+
+class WorktreeOperations:
+    """Branch, worktree, commit, and PR operations for the SDLC beta flow.
+
+    Implementation happens in a separate Git worktree next to the repository
+    (``<repo>.worktrees/<branch>``), so the developer's own checkout and its
+    uncommitted changes are never touched. Every write happens only after the
+    graph's human approval gates.
+    """
+
+    EXCLUDED_PATHSPECS = tuple(f":(exclude){path.rstrip('/')}" for path in FORBIDDEN_PATHS if path != ".git/")
+
+    def __init__(self, repo_root: Path) -> None:
+        self.repo_root = repo_root
+
+    @staticmethod
+    def _run_in(cwd: Path, *command: str, check: bool = True) -> subprocess.CompletedProcess:
+        result = subprocess.run(list(command), cwd=cwd, text=True, capture_output=True, check=False)
+        if check and result.returncode:
+            raise RuntimeError(result.stderr.strip() or f"{command[0]} command failed")
+        return result
+
+    def _git(self, *args: str, cwd: Path | None = None) -> str:
+        return self._run_in(cwd or self.repo_root, "git", *args).stdout.strip()
+
+    def default_base_branch(self) -> str:
+        head = self._run_in(self.repo_root, "git", "symbolic-ref", "--short", "refs/remotes/origin/HEAD", check=False)
+        name = head.stdout.strip()
+        return name.removeprefix("origin/") if head.returncode == 0 and name.startswith("origin/") else "main"
+
+    def worktree_root(self) -> Path:
+        return self.repo_root.parent / f"{self.repo_root.name}.worktrees"
+
+    def ensure_branch_worktree(self, branch: str, base_branch: str) -> Dict[str, str]:
+        """Create or reuse the ticket branch and its isolated worktree."""
+        fetched = self._run_in(self.repo_root, "git", "fetch", "origin", base_branch, check=False).returncode == 0
+        base_ref = f"origin/{base_branch}" if fetched else base_branch
+        if self._git("branch", "--list", branch):
+            branch_status = "reused"
+        else:
+            self._git("branch", "--no-track", branch, base_ref)
+            branch_status = "created"
+
+        path = self.worktree_root() / branch.replace("/", "-")
+        registered = self._git("worktree", "list", "--porcelain").splitlines()
+        if f"worktree {path}" in registered:
+            worktree_status = "reused"
+        else:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                self._git("worktree", "add", str(path), branch)
+            except RuntimeError as error:
+                raise RuntimeError(
+                    f"Could not create a worktree for {branch}. If that branch is checked out in your own "
+                    f"checkout, switch away from it and retry. Git said: {error}"
+                ) from error
+            worktree_status = "created"
+        return {
+            "branch": branch,
+            "base_branch": base_branch,
+            "base_ref": base_ref,
+            "path": str(path),
+            "branch_status": branch_status,
+            "worktree_status": worktree_status,
+        }
+
+    def changes(self, worktree: Path, base_ref: str) -> List[Dict[str, str]]:
+        """Committed and uncommitted changes in the worktree relative to the base."""
+        changes: Dict[str, str] = {}
+        for row in self._git("diff", "--name-status", base_ref, "--", cwd=worktree).splitlines():
+            columns = row.split("\t")
+            if len(columns) >= 2:
+                changes[columns[-1]] = columns[0][0]
+        for path in self._git("ls-files", "--others", "--exclude-standard", "--", cwd=worktree).splitlines():
+            if path:
+                changes[path] = "A"
+        return [{"path": path, "status": status} for path, status in sorted(changes.items()) if not path.startswith(FORBIDDEN_PATHS)]
+
+    def diff_for_path(self, worktree: Path, base_ref: str, path: str) -> str:
+        target = (worktree / path).resolve()
+        if worktree.resolve() not in target.parents:
+            raise ValueError("Unknown file change")
+        untracked = self._git("ls-files", "--others", "--exclude-standard", "--", path, cwd=worktree)
+        command = ("git", "diff", "--no-index", "--", "/dev/null", path) if untracked else ("git", "diff", "--no-ext-diff", base_ref, "--", path)
+        result = self._run_in(worktree, *command, check=False)
+        if result.returncode not in (0, 1):
+            raise RuntimeError(result.stderr.strip() or "Unable to read file diff")
+        return result.stdout or "No text diff is available for this file."
+
+    def combined_diff(self, worktree: Path, base_ref: str, limit: int = 120_000) -> str:
+        diff = "".join(self.diff_for_path(worktree, base_ref, change["path"]) for change in self.changes(worktree, base_ref))
+        return diff if len(diff) <= limit else diff[:limit] + "\n[diff truncated]\n"
+
+    def has_uncommitted_changes(self, worktree: Path) -> bool:
+        rows = self._run_in(worktree, "git", "status", "--porcelain", "--untracked-files=all").stdout.splitlines()
+        return any(not row[3:].strip('"').startswith(FORBIDDEN_PATHS) for row in rows if row.strip())
+
+    def commit(self, worktree: Path, ticket_key: str, message: str, fallback_subject: str) -> Dict[str, str]:
+        """Stage every non-protected change and commit with the Jira key in the subject."""
+        self._git("add", "-A", "--", ".", *self.EXCLUDED_PATHSPECS, cwd=worktree)
+        if self._run_in(worktree, "git", "diff", "--cached", "--quiet", check=False).returncode == 0:
+            return {"status": "skipped_clean", "sha": self._git("rev-parse", "HEAD", cwd=worktree), "subject": ""}
+        lines = message.strip().splitlines() or [fallback_subject]
+        subject, body = lines[0].strip() or fallback_subject, "\n".join(lines[1:]).strip()
+        if ticket_key not in subject:
+            subject = f"{ticket_key}: {subject}"
+        self._git("commit", "-m", subject, *(["-m", body] if body else []), cwd=worktree)
+        return {"status": "committed", "sha": self._git("rev-parse", "HEAD", cwd=worktree), "subject": subject}
+
+    def push_and_open_pull_request(
+        self, worktree: Path, branch: str, base_branch: str, base_ref: str, title: str, body: str, draft: bool
+    ) -> Dict[str, str]:
+        if self._git("rev-list", "--count", f"{base_ref}..HEAD", cwd=worktree) == "0":
+            return {"status": "skipped_no_commits", "url": ""}
+        self._git("push", "-u", "origin", branch, cwd=worktree)
+        existing = self._run_in(worktree, "gh", "pr", "view", branch, "--json", "url", "--jq", ".url", check=False)
+        if existing.returncode == 0 and existing.stdout.strip():
+            return {"status": "updated_existing", "url": existing.stdout.strip()}
+        command = ["gh", "pr", "create", "--base", base_branch, "--head", branch, "--title", title, "--body", body]
+        if draft:
+            command.append("--draft")
+        url = self._run_in(worktree, *command).stdout.strip()
+        return {"status": "created_draft" if draft else "created_ready", "url": url}
+
+    def remove_worktree(self, worktree: Path) -> str:
+        """Remove a clean worktree; keep one with uncommitted work. The branch always stays."""
+        if not worktree.exists():
+            return "already_removed"
+        if self.has_uncommitted_changes(worktree):
+            return "kept_uncommitted_changes"
+        # --force only clears ignored files; there is no tracked or untracked work left.
+        self._git("worktree", "remove", "--force", str(worktree))
+        self._git("worktree", "prune")
+        return "removed"

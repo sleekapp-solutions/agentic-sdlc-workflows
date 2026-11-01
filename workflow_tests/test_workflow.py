@@ -1,6 +1,7 @@
 from pathlib import Path
 from io import BytesIO
 import json
+import subprocess
 import time
 
 from langgraph.checkpoint.memory import InMemorySaver
@@ -114,6 +115,12 @@ class FakePullRequestReviewer:
             "findings": [{"severity": "high", "title": "Missing migration", "body": "Keep old progress readable.", "path": "lib/progress.dart", "line": 10}],
             "tests_to_run": ["flutter test test/progress_service_test.dart"],
         }
+
+
+def git_repository(path):
+    """Runs only start in a Git checkout, so runtime tests use an empty one."""
+    subprocess.run(["git", "init", "-q", str(path)], check=True)
+    return path
 
 
 def build_test_graph():
@@ -590,7 +597,7 @@ def test_local_runtime_exposes_live_execution_events(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_HOME", str(tmp_path))
     monkeypatch.delenv("WORKFLOW_CODEX_MODEL", raising=False)
     monkeypatch.delenv("WORKFLOW_CODEX_REASONING_EFFORT", raising=False)
-    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
+    runtime = WorkflowRuntime(git_repository(tmp_path), tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
     response = runtime.start("SCRUM-3")
     deadline = time.monotonic() + 2
     while response["run"]["running"] and time.monotonic() < deadline:
@@ -635,7 +642,7 @@ def test_local_runtime_retries_only_the_failed_planning_step(tmp_path, monkeypat
         )
 
     monkeypatch.setattr(GitOperations, "snapshot_changes", lambda self: {})
-    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
+    runtime = WorkflowRuntime(git_repository(tmp_path), tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
     response = runtime.start("SCRUM-3")
     deadline = time.monotonic() + 2
     while response["run"]["running"] and time.monotonic() < deadline:
@@ -678,7 +685,7 @@ def test_local_runtime_does_not_retry_or_plan_a_missing_ticket(tmp_path, monkeyp
         )
 
     monkeypatch.setattr(GitOperations, "snapshot_changes", lambda self: {})
-    runtime = WorkflowRuntime(tmp_path, tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
+    runtime = WorkflowRuntime(git_repository(tmp_path), tmp_path / "checkpoints.sqlite", graph_factory=graph_factory)
     response = runtime.start("MGA-66")
     deadline = time.monotonic() + 2
     while response["run"]["running"] and time.monotonic() < deadline:
@@ -700,7 +707,7 @@ def test_local_runtime_starts_a_pr_review_flow(tmp_path):
         )
 
     runtime = WorkflowRuntime(
-        tmp_path,
+        git_repository(tmp_path),
         tmp_path / "checkpoints.sqlite",
         pr_review_graph_factory=review_graph_factory,
     )

@@ -17,6 +17,7 @@ workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Work
 | Flow | Input | What it can do | What it will not do automatically |
 | --- | --- | --- | --- |
 | Jira delivery | Jira key such as `PROJ-14` | Fetch ticket, draft a plan, implement after approval, optionally validate, then create a draft PR after a second approval | Push, commit, or create a PR without explicit approval |
+| Ticket to reviewed PR (beta) | Jira key such as `PROJ-14` | Check GitHub and Jira access, plan, implement in an isolated Git worktree, assess the Swift blast radius, run an agent code review, then commit and open a draft or ready PR after a second approval | Touch your own checkout, or commit, push, or open a PR without explicit approval |
 | Pull-request review | GitHub PR number | Read the PR and patch, generate a structured review, then publish an explicitly approved approval, change request, or comment | Change code or post any review without explicit approval |
 
 ## Quick start
@@ -38,15 +39,19 @@ uv tool install git+https://github.com/sleekapp-solutions/agentic-sdlc-workflows
 
 If the command isn't found afterwards, run `uv tool update-shell` and open a new terminal.
 
-### 3. Run it in any repository
+### 3. Run it
 
 ```bash
-cd /path/to/your-repository
 agentic-workflows-ui
 ```
 
-The browser opens `http://127.0.0.1:8080`. Check the **Local environment**
-panel: anything marked as a warning is a missing prerequisite.
+The browser opens `http://127.0.0.1:8080`. The UI targets the repository you
+run it from; outside a repository it reopens the last one you used. Click the
+repository name in the top bar to switch to another checkout: it lists recent
+repositories and the ones it finds in your usual code folders, or you can paste
+a path. Runs already in progress keep their repository. `--repo /path` still
+picks one up front. Check the **Environment** panel: anything marked as a
+warning is a missing prerequisite.
 
 Update later by re-running the install command with `--force --reinstall`.
 
@@ -71,6 +76,16 @@ the agent CLI, never in this tool.
 ![Jira delivery workflow](docs/graphs/jira_delivery.svg)
 
 The editable source is [docs/graphs/jira_delivery.mmd](docs/graphs/jira_delivery.mmd).
+
+### Ticket to reviewed PR (beta)
+
+![Ticket to reviewed PR workflow](docs/graphs/sdlc_beta.svg)
+
+The editable source is [docs/graphs/sdlc_beta.mmd](docs/graphs/sdlc_beta.mmd).
+The worktree lives next to the repository at `<repo>.worktrees/<branch>`. After
+the run, a clean worktree is removed and one with uncommitted work (for example
+after a rejection) is kept; the branch is always kept. From the terminal:
+`agentic-workflows deliver-beta PROJ-14 --run-id my-run [--base main] [--ready]`.
 
 ### Pull-request review
 

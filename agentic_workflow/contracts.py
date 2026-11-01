@@ -34,6 +34,22 @@ class WorkflowState(TypedDict, total=False):
     review_findings: List[Dict[str, Any]]
     published_review: Dict[str, Any]
     retry_target: str
+    # SDLC beta flow
+    repo_context: Dict[str, Any]
+    auth: Dict[str, str]
+    delivery_brief: Dict[str, Any]
+    worktree: Dict[str, str]
+    graph_context: Dict[str, Any]
+    change_review: Dict[str, Any]
+    change_feedback: Dict[str, Any]
+    plan_decision: str
+    change_decision: str
+    pr_mode: str
+    base_branch: str
+    commit: Dict[str, str]
+    pr_result: Dict[str, str]
+    cleanup: Dict[str, str]
+    result: Dict[str, Any]
 
 
 class TicketClient:

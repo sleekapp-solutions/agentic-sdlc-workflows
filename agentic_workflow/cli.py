@@ -17,6 +17,7 @@ from langgraph.types import Command
 
 from .jira_delivery import build_graph
 from .pr_review_graph import build_pr_review_graph
+from .sdlc_beta import build_sdlc_beta_graph
 from .settings import load_workflow_environment
 
 
@@ -32,12 +33,17 @@ def main() -> int:
     start = subparsers.add_parser("start", help="Fetch and plan a Jira ticket")
     start.add_argument("ticket", help="Jira issue key, e.g. SCRUM-3")
     start.add_argument("--run-id", required=True, help="Stable ID used to resume this run")
+    beta = subparsers.add_parser("deliver-beta", help="Run the SDLC beta flow: worktree, review, then PR")
+    beta.add_argument("ticket", help="Jira issue key, e.g. SCRUM-3")
+    beta.add_argument("--run-id", required=True, help="Stable ID used to resume this run")
+    beta.add_argument("--base", default="", help="Base branch; defaults to origin's default branch")
+    beta.add_argument("--ready", action="store_true", help="Open the PR ready for review instead of as a draft")
     review_pr = subparsers.add_parser("review-pr", help="Review an existing GitHub pull request locally")
     review_pr.add_argument("number", type=int, help="GitHub pull-request number")
     review_pr.add_argument("--run-id", required=True, help="Stable ID used to resume this run")
     resume = subparsers.add_parser("resume", help="Resume a paused approval")
     resume.add_argument("--run-id", required=True, help="Run ID returned from start")
-    resume.add_argument("--flow", choices=("jira_delivery", "pr_review"), default="jira_delivery", help="Workflow that owns the paused run")
+    resume.add_argument("--flow", choices=("jira_delivery", "pr_review", "sdlc_beta"), default="jira_delivery", help="Workflow that owns the paused run")
     resume.add_argument("--decision", required=True, help="JSON, e.g. '{\"action\":\"approve\"}'")
     args = parser.parse_args()
 
@@ -50,11 +56,17 @@ def main() -> int:
         if args.command == "start":
             graph = build_graph(repo).compile(checkpointer=checkpointer)
             result = graph.invoke({"ticket_key": args.ticket}, config=config)
+        elif args.command == "deliver-beta":
+            graph = build_sdlc_beta_graph(repo).compile(checkpointer=checkpointer)
+            result = graph.invoke(
+                {"ticket_key": args.ticket, "base_branch": args.base, "pr_mode": "ready" if args.ready else "draft"}, config=config
+            )
         elif args.command == "review-pr":
             graph = build_pr_review_graph(repo).compile(checkpointer=checkpointer)
             result = graph.invoke({"pr_number": args.number}, config=config)
         else:
-            graph = (build_graph(repo) if args.flow == "jira_delivery" else build_pr_review_graph(repo)).compile(checkpointer=checkpointer)
+            factories = {"jira_delivery": build_graph, "pr_review": build_pr_review_graph, "sdlc_beta": build_sdlc_beta_graph}
+            graph = factories[args.flow](repo).compile(checkpointer=checkpointer)
             try:
                 decision = json.loads(args.decision)
             except json.JSONDecodeError as error:

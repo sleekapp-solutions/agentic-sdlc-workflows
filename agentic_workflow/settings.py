@@ -22,6 +22,10 @@ from dotenv import dotenv_values
 
 REPOSITORY_SETTINGS_FILE = ".agentic-workflow.env"
 
+# What the process environment held before any configuration layer was applied,
+# so switching repositories can drop the previous repository's settings.
+_PROCESS_ENVIRONMENT = dict(os.environ)
+
 # A repository file may be committed and shared, so it can only select
 # validation and provider preferences. Commands that run in place of the agent
 # and credentials stay in user-controlled configuration.
@@ -71,3 +75,17 @@ def load_workflow_environment(
     for path in (user_config or user_config_path(), checkout_env or checkout_env_path()):
         if path.is_file():
             _apply(dotenv_values(path))
+
+
+def switch_repository(repo: Path) -> None:
+    """Re-resolve settings for another target repository in a running process.
+
+    Values applied from configuration files are cleared first; anything that
+    was set in the real process environment keeps its highest precedence.
+    """
+    for name in REPOSITORY_SETTINGS:
+        if name in _PROCESS_ENVIRONMENT:
+            os.environ[name] = _PROCESS_ENVIRONMENT[name]
+        else:
+            os.environ.pop(name, None)
+    load_workflow_environment(repo)

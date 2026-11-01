@@ -306,7 +306,8 @@ class CodexJsonAgent:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
 
-    def run(self, prompt: str, schema: Dict[str, Any]) -> Dict[str, Any]:
+    def run(self, prompt: str, schema: Dict[str, Any], *, write: bool = False) -> Dict[str, Any]:
+        """Return structured output; ``write`` lets the agent edit files and run commands."""
         with tempfile.TemporaryDirectory(prefix="memomatch-codex-") as directory:
             temporary = Path(directory)
             output = temporary / "response.json"
@@ -319,7 +320,7 @@ class CodexJsonAgent:
                     *_codex_options(),
                     "--ephemeral",
                     "--sandbox",
-                    "read-only",
+                    "workspace-write" if write else "read-only",
                     "--output-schema",
                     str(schema_path),
                     "--output-last-message",
@@ -329,8 +330,8 @@ class CodexJsonAgent:
                 cwd=self.repo_root,
                 text=True,
                 capture_output=True,
-                timeout=10 * 60,
-                env=_codex_environment(),
+                timeout=(60 if write else 10) * 60,
+                env={**_codex_environment(), "AGENTIC_WORKFLOW_NO_PUSH": "1"} if write else _codex_environment(),
                 check=False,
             )
             if result.returncode:
@@ -363,7 +364,7 @@ class CopilotJsonAgent:
     def __init__(self, repo_root: Path) -> None:
         self.repo_root = repo_root
 
-    def run(self, prompt: str, schema: Dict[str, Any], *, allow_ticket_mcp: bool = False) -> Dict[str, Any]:
+    def run(self, prompt: str, schema: Dict[str, Any], *, allow_ticket_mcp: bool = False, write: bool = False) -> Dict[str, Any]:
         schema_instruction = (
             "Return only a JSON object that conforms to this JSON Schema. Do not wrap it in Markdown.\n"
             + json.dumps(schema)
@@ -374,14 +375,16 @@ class CopilotJsonAgent:
             if not mcp_server:
                 raise RuntimeError("WORKFLOW_COPILOT_TICKET_MCP_SERVER must name the configured Jira MCP server")
             command.append(f"--allow-tool={mcp_server}")
+        if write:
+            command.append("--allow-tool=write,shell")
         try:
             result = subprocess.run(
                 command,
                 cwd=self.repo_root,
                 text=True,
                 capture_output=True,
-                timeout=10 * 60,
-                env=_codex_environment(),
+                timeout=(60 if write else 10) * 60,
+                env={**_codex_environment(), "AGENTIC_WORKFLOW_NO_PUSH": "1"} if write else _codex_environment(),
                 check=False,
             )
         except FileNotFoundError as error:
@@ -425,11 +428,11 @@ class LocalMcpTicketClient(CodexMcpTicketClient):
     def __init__(self, repo_root: Path) -> None:
         self.agent = _structured_agent(repo_root)
 
-    def fetch(self, ticket_key: str) -> Dict[str, Any]:
-        provider = _active_workflow_configuration().get("provider", "codex")
-        _require_ticket_mcp(provider)
-        schema = _ticket_lookup_schema()
-        prompt = (
+    def _schema(self) -> Dict[str, Any]:
+        return _ticket_lookup_schema()
+
+    def _prompt(self, ticket_key: str) -> str:
+        return (
             f"Use only the configured Atlassian MCP tool to retrieve Jira ticket {ticket_key}. "
             "Set `status` to `found`, `not_found`, `permission_denied`, or `unavailable` based only on the "
             "tool result. For any status except `found`, leave ticket fields empty and put a short factual "
@@ -438,6 +441,12 @@ class LocalMcpTicketClient(CodexMcpTicketClient):
             "`summary`; never use a blank placeholder or infer it from the description. "
             "Do not edit files or call any write tool."
         )
+
+    def fetch(self, ticket_key: str) -> Dict[str, Any]:
+        provider = _active_workflow_configuration().get("provider", "codex")
+        _require_ticket_mcp(provider)
+        schema = self._schema()
+        prompt = self._prompt(ticket_key)
         if isinstance(self.agent, CopilotJsonAgent):
             result = self.agent.run(prompt, schema, allow_ticket_mcp=True)
         else:
@@ -685,3 +694,146 @@ class CopilotImplementer(Implementer):
         if result.returncode:
             raise RuntimeError(f"GitHub Copilot CLI implementation failed ({result.returncode}): {result.stderr[-2000:]}")
         return {"command": command, "stdout": result.stdout[-6000:], "stderr": result.stderr[-2000:]}
+
+
+def _string_list() -> Dict[str, Any]:
+    return {"type": "array", "items": {"type": "string"}}
+
+
+def _strict_object(properties: Dict[str, Any]) -> Dict[str, Any]:
+    return {"type": "object", "additionalProperties": False, "required": list(properties), "properties": properties}
+
+
+class DetailedMcpTicketClient(LocalMcpTicketClient):
+    """Fetches a Jira ticket plus the acceptance criteria and context a delivery needs."""
+
+    def _schema(self) -> Dict[str, Any]:
+        schema = _ticket_lookup_schema()
+        schema["properties"] = {**schema["properties"], "acceptance_criteria": _string_list(), "implementation_context": {"type": "string"}}
+        schema["required"] = [*schema["required"], "acceptance_criteria", "implementation_context"]
+        return schema
+
+    def _prompt(self, ticket_key: str) -> str:
+        return super()._prompt(ticket_key) + (
+            " When found, also set `acceptance_criteria` to the ticket's written acceptance criteria as a list; "
+            "if none are written, derive testable criteria from the description and say so in the first item. "
+            "Set `implementation_context` to what a developer needs before planning: the problem, the components "
+            "involved, linked issues, and constraints."
+        )
+
+
+class DeliveryPlanner:
+    """Plans a ticket and drafts the validation approach, review focus, and PR summary."""
+
+    def __init__(self, repo_root: Path) -> None:
+        self.agent = _structured_agent(repo_root)
+
+    def create(self, ticket: Dict[str, Any], context: Dict[str, Any], feedback: Optional[str] = None) -> Dict[str, Any]:
+        schema = _strict_object({
+            "plan": _strict_object({
+                "goal": {"type": "string"},
+                "assumptions": _string_list(),
+                "files_to_inspect": _string_list(),
+                "implementation_steps": _string_list(),
+                "tests": _string_list(),
+                "risks": _string_list(),
+            }),
+            "validation_approach": _string_list(),
+            "review_focus": _string_list(),
+            "pr_summary": _strict_object({"title": {"type": "string"}, "body": {"type": "string"}}),
+        })
+        request = json.dumps({
+            "ticket": ticket,
+            "engineering_guardrails": context.get("guardrails", ""),
+            "configured_validation_commands": context.get("validation_commands", []),
+            "review_feedback": feedback or "",
+        })
+        return self.agent.run(
+            "Act as a software delivery planner for this local repository. Inspect the code as needed but do not "
+            "edit files. Produce a concrete, non-implementing plan that respects the ticket scope, the engineering "
+            "guardrails, and any review feedback. `validation_approach` lists the commands to run and the checks "
+            "that prove each acceptance criterion. `review_focus` lists where a reviewer should look hardest. "
+            f"`pr_summary.title` starts with \"{ticket['key']}: \" and `pr_summary.body` is Markdown with Summary, "
+            "Changes, and Testing sections.\n\n" + request,
+            schema,
+        )
+
+
+class WorktreeImplementer:
+    """Implements an approved plan inside an isolated worktree and reports what changed."""
+
+    def __init__(self, worktree: Path) -> None:
+        self.agent = _structured_agent(worktree)
+
+    def run(self, ticket: Dict[str, Any], brief: Dict[str, Any], worktree: Dict[str, str], guardrails: str, feedback: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        schema = _strict_object({
+            "change_summary": {"type": "string"},
+            "files_changed": _string_list(),
+            "validation": {"type": "array", "items": _strict_object({
+                "command": {"type": "string"}, "passed": {"type": "boolean"}, "output": {"type": "string"},
+            })},
+            "commit_message": {"type": "string"},
+            "pr_title": {"type": "string"},
+            "pr_body": {"type": "string"},
+        })
+        request = json.dumps({
+            "ticket": ticket,
+            "approved_plan": brief.get("plan", {}),
+            "validation_approach": brief.get("validation_approach", []),
+            "draft_pr_summary": brief.get("pr_summary", {}),
+            "branch": worktree["branch"],
+            "base": worktree["base_ref"],
+            "engineering_guardrails": guardrails,
+            "revision_request": feedback or {},
+        })
+        return self.agent.run(
+            "Act as the implementation agent. You are in an isolated Git worktree on the ticket branch; work only "
+            "inside it. Implement the approved plan. If `revision_request` is not empty, address every point in it "
+            "and keep the rest of the existing change. Run the validation approach and fix failures you introduced. "
+            "Never commit, push, create pull requests, alter remotes, or read secrets. Report `files_changed` as "
+            f"repo-relative paths. `commit_message` is a subject line starting with \"{ticket['key']}: \" under "
+            "72 characters, a blank line, and a short body. `pr_title` starts with the same key; `pr_body` updates "
+            "the draft PR summary to match what was actually built and tested.\n\n" + request,
+            schema,
+            write=True,
+        )
+
+
+class ChangeReviewer:
+    """Reviews the worktree change before the human publication gate, read-only."""
+
+    def __init__(self, worktree: Path) -> None:
+        self.agent = _structured_agent(worktree)
+
+    def review(self, ticket: Dict[str, Any], brief: Dict[str, Any], implementation: Dict[str, Any], diff: str, graph_context: Dict[str, Any], guardrails: str) -> Dict[str, Any]:
+        schema = _strict_object({
+            "verdict": {"type": "string", "enum": ["approve", "request_changes"]},
+            "summary": {"type": "string"},
+            "findings": {"type": "array", "items": _strict_object({
+                "severity": {"type": "string", "enum": ["critical", "high", "medium", "low"]},
+                "category": {"type": "string", "enum": ["correctness", "tests", "wiring", "validation", "standards"]},
+                "title": {"type": "string"},
+                "body": {"type": "string"},
+                "path": {"type": "string"},
+                "line": {"type": ["integer", "null"]},
+            })},
+            "acceptance_criteria_met": {"type": "array", "items": _strict_object({
+                "criterion": {"type": "string"}, "met": {"type": "boolean"},
+            })},
+        })
+        request = json.dumps({
+            "ticket": ticket,
+            "review_focus": brief.get("review_focus", []),
+            "implementation_report": implementation,
+            "swift_blast_radius": graph_context,
+            "repository_standards": guardrails,
+            "patch": diff,
+        })
+        return self.agent.run(
+            "Act as a careful code reviewer for this worktree. Review the supplied patch against the ticket and its "
+            "acceptance criteria. Check correctness, test coverage, wiring (new code is reachable and registered), "
+            "validation gaps, and compliance with the repository standards. Look hardest at the planned review focus "
+            "and at files listed as dependents in the Swift blast radius. Report only actionable findings; no style "
+            "nits. Do not edit files, run state-changing commands, or post anything.\n\n" + request,
+            schema,
+        )
