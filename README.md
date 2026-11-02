@@ -20,40 +20,106 @@ workflow, or both, see [Choosing Between an Agent Skill and an Agentic SDLC Work
 | Ticket to reviewed PR (beta) | Jira key such as `PROJ-14` | Check GitHub and Jira access, plan, implement in an isolated Git worktree, assess the Swift blast radius, run an agent code review, then commit and open a draft or ready PR after a second approval | Touch your own checkout, or commit, push, or open a PR without explicit approval |
 | Pull-request review | GitHub PR number | Read the PR and patch, generate a structured review, then publish an explicitly approved approval, change request, or comment | Change code or post any review without explicit approval |
 
-## Quick start
+## Install
 
-### 1. Install the prerequisites
+You need, once per machine:
 
 - [Git](https://git-scm.com/) and [uv](https://docs.astral.sh/uv/) (uv installs Python if needed).
-- [GitHub CLI](https://cli.github.com/), then `gh auth login`.
-- One agent CLI, logged in: [Codex CLI](https://developers.openai.com/) (default) or
+- [GitHub CLI](https://cli.github.com/), signed in with `gh auth login`.
+- One agent CLI, signed in: [Codex CLI](https://developers.openai.com/) (default) or
   [GitHub Copilot CLI](https://docs.github.com/en/copilot/get-started/cli-quickstart) (`copilot login`).
-- For Jira delivery only: an Atlassian MCP server named `atlassian` in that agent's settings.
-- The target repository must be a `git clone` with a GitHub `origin` remote.
+- For the two Jira flows: an Atlassian MCP server named `atlassian` in that agent's settings.
 
-### 2. Install the tool
+Then install the tool:
 
 ```bash
 uv tool install git+https://github.com/sleekapp-solutions/agentic-sdlc-workflows
 ```
 
-If the command isn't found afterwards, run `uv tool update-shell` and open a new terminal.
-
-### 3. Run it
+If `agentic-workflows-ui` isn't found afterwards, run `uv tool update-shell` and
+open a new terminal. To update later:
 
 ```bash
+uv tool install --force --reinstall git+https://github.com/sleekapp-solutions/agentic-sdlc-workflows
+```
+
+## Use it
+
+### 1. Open the UI
+
+From any repository (a `git clone` with a GitHub `origin` remote):
+
+```bash
+cd /path/to/your-repository
 agentic-workflows-ui
 ```
 
-The browser opens `http://127.0.0.1:8080`. The UI targets the repository you
-run it from; outside a repository it reopens the last one you used. Click the
-repository name in the top bar to switch to another checkout: it lists recent
-repositories and the ones it finds in your usual code folders, or you can paste
-a path. Runs already in progress keep their repository. `--repo /path` still
-picks one up front. Check the **Environment** panel: anything marked as a
-warning is a missing prerequisite.
+Your browser opens `http://127.0.0.1:8080`. Started outside a repository, it
+reopens the last one you used.
 
-Update later by re-running the install command with `--force --reinstall`.
+### 2. Pick the repository
+
+The top bar shows the target repository. Click it to switch: choose a recent
+repository, one found in your usual code folders (`Desktop`, `Documents`,
+`Projects`, `src`, …), or paste a path. A run that has already started keeps its
+repository.
+
+Check the **Environment** panel. Anything marked *needs setup* is a missing
+prerequisite (GitHub CLI sign-in, the agent CLI, or the Jira MCP server).
+
+### 3. Choose a flow and start
+
+| Flow | Enter | Use it when |
+| --- | --- | --- |
+| **Deliver a Jira ticket** | Jira key, e.g. `PROJ-14` | You want the agent to work directly in your checkout and open a draft PR. |
+| **Ticket to reviewed PR** (beta) | Jira key, e.g. `PROJ-14` | You want the work done in an isolated worktree, reviewed by an agent first, then opened as a draft or ready PR. |
+| **Review a pull request** | PR number, e.g. `42` | You want a local review of an existing PR, published only as you approve it. |
+
+**Agent settings** (optional) picks Codex or Copilot, a model, and reasoning
+effort for this run only. For the beta flow it also sets **Pull request**
+(draft or ready) and **Base branch** (default: origin's default branch).
+
+### 4. Approve each step
+
+Nothing leaves your machine until you approve it.
+
+**Deliver a Jira ticket**
+
+1. Review the plan: **Approve**, **Request revision** with feedback, or **Reject**.
+2. The agent implements on branch `agent/<ticket>` in your checkout; configured
+   validation runs.
+3. Review the changed files and their diffs, untick any you don't want, then
+   **Create draft PR** or **Reject publication**.
+
+**Ticket to reviewed PR (beta)**
+
+1. The flow checks GitHub and Jira access, then fetches the ticket with its
+   acceptance criteria.
+2. Review the plan, validation approach, review focus, and PR summary draft:
+   **Approve**, **Request revision**, or **Reject**.
+3. The agent implements in a separate worktree at `<repo>.worktrees/<branch>`
+   on `feature/<ticket>-<title>`; your own checkout is never touched. Configured
+   validation runs there.
+4. The flow lists which Swift files use the changed types (blast radius), and a
+   review agent checks correctness, tests, wiring, validation, repository
+   standards, and each acceptance criterion.
+5. Review the findings and diffs, then:
+   - **Approve, commit and open PR**: commits with the Jira key in the subject,
+     pushes, and opens the PR.
+   - **Request revision**: sends your feedback and the review findings back to
+     the implementer; you review again.
+   - **Reject**: publishes nothing.
+6. A clean worktree is removed; one with uncommitted work (after a rejection)
+   is kept. The branch is always kept. The result panel shows every status.
+
+**Review a pull request**
+
+1. Read the generated summary and findings.
+2. Choose approve, request changes, or comment; edit the summary; tick the
+   findings to post inline. **Publish review to GitHub**, or **Dismiss**.
+
+If a step fails, the run explains why and offers **Retry** for just that step;
+earlier steps and approvals are kept.
 
 ## Configuration
 
@@ -82,10 +148,6 @@ The editable source is [docs/graphs/jira_delivery.mmd](docs/graphs/jira_delivery
 ![Ticket to reviewed PR workflow](docs/graphs/sdlc_beta.svg)
 
 The editable source is [docs/graphs/sdlc_beta.mmd](docs/graphs/sdlc_beta.mmd).
-The worktree lives next to the repository at `<repo>.worktrees/<branch>`. After
-the run, a clean worktree is removed and one with uncommitted work (for example
-after a rejection) is kept; the branch is always kept. From the terminal:
-`agentic-workflows deliver-beta PROJ-14 --run-id my-run [--base main] [--ready]`.
 
 ### Pull-request review
 
@@ -96,15 +158,15 @@ The editable source is [docs/graphs/pr_review.mmd](docs/graphs/pr_review.mmd).
 ### Render the diagrams
 
 Mermaid CLI is installed as a local documentation dependency. Install the
-locked version and regenerate both SVGs with:
+locked version and regenerate the SVGs with:
 
 ```bash
 npm ci
 npm run docs:diagrams
 ```
 
-The command renders `docs/graphs/jira_delivery.svg` and
-`docs/graphs/pr_review.svg`. Do not install Mermaid CLI globally; keeping it
+The command renders `docs/graphs/jira_delivery.svg`,
+`docs/graphs/sdlc_beta.svg`, and `docs/graphs/pr_review.svg`. Do not install Mermaid CLI globally; keeping it
 local makes diagram output reproducible for contributors and CI.
 
 ## What is LangGraph?
@@ -123,8 +185,8 @@ resume the same workflow rather than restart it.
 ```text
 Python                 → programming language
 LangGraph package      → workflow/orchestration framework installed with pip
-agentic_workflow/jira_delivery.py and pr_review_graph.py
-                       → this project's specific Jira delivery and PR-review graphs
+agentic_workflow/jira_delivery.py, sdlc_beta.py, and pr_review_graph.py
+                       → this project's Jira delivery, SDLC beta, and PR-review graphs
 ```
 
 The runtime dependencies in `pyproject.toml` install `langgraph` and
@@ -171,6 +233,8 @@ ticket, agent, Git, and validator implementations.
 | Planning | `LocalPlanner` | Runs the selected CLI in read-only structured-output mode. |
 | PR metadata, patch, and review publication | `GitHubCliPullRequestClient` | Fetches through authenticated `gh`, then posts a review only after the final explicit approval. |
 | PR review | `LocalPullRequestReviewer` | Sends the fetched PR metadata and patch to the selected provider, returning structured findings for local selection and review. |
+| SDLC beta ticket, plan, implementation, review | `DetailedMcpTicketClient`, `DeliveryPlanner`, `WorktreeImplementer`, `ChangeReviewer` | Same providers with structured output; the implementer may write only inside the run's worktree, and the reviewer is read-only. |
+| SDLC beta Git and GitHub | `WorktreeOperations` | Creates the branch and worktree, commits, pushes, and opens the PR only after the change approval. |
 | Implementation | `CommandImplementer` / `CopilotImplementer` | Selects Codex or Copilot by default after plan approval; a custom `IMPLEMENTATION_COMMAND` can replace it. |
 | Validation and publication | `ProjectValidator` / `GitOperations` | Runs the target repository's configured commands, then commits/pushes only after explicit path-level approval. |
 
@@ -193,32 +257,12 @@ repository:
 WORKFLOW_VALIDATION_COMMANDS=npm run lint; npm test
 ```
 
-If any command fails, no draft PR is created. This file may only set
+In Jira delivery, if any command fails, no draft PR is created. In the beta
+flow the commands run in the worktree and a failure is shown at the change
+approval, where you can request a revision, approve, or reject. This file may only set
 `WORKFLOW_VALIDATION_COMMANDS`, `WORKFLOW_AGENT_PROVIDER`, and the
 `WORKFLOW_CODEX_*` / `WORKFLOW_COPILOT_*` settings; everything else belongs in
 your user config.
-
-## Run the local UI
-
-```bash
-agentic-workflows-ui              # current directory
-agentic-workflows-ui --repo PATH  # another repository
-```
-
-The browser opens `http://127.0.0.1:8080` automatically. The UI is loopback-only. It lets you select the
-flow, choose Codex CLI or GitHub Copilot CLI, optionally override the model,
-and inspect the resolved local defaults before starting.
-
-The **Local environment** panel shows the target repository and sanitized
-`origin`, GitHub CLI authentication state, selected-provider installation,
-configured MCP server names, and whether the expected Jira MCP is configured.
-It never displays tokens, credentials, or MCP configuration values. MCP status
-means local configuration was found; a real Jira permission/connectivity check
-still occurs only when a delivery run starts.
-
-The Jira delivery flow pauses for plan approval and for the selected paths to
-be committed/pushed. Pull-request review pauses before its one external write:
-publishing an approval, change request, or comment with selected findings.
 
 ## Run from the terminal
 
@@ -246,6 +290,17 @@ agentic-workflows resume \
   --decision '{"action":"approve","paths":["src/app.ts","test/app_test.ts"]}'
 ```
 
+Start the SDLC beta flow (add `--base BRANCH` or `--ready` as needed), then
+resume each approval with `--flow sdlc_beta`:
+
+```bash
+agentic-workflows deliver-beta PROJ-14 --run-id proj-14-beta
+agentic-workflows resume --flow sdlc_beta --run-id proj-14-beta --decision '{"action":"approve"}'
+```
+
+At the change approval, `{"action":"revise","feedback":"..."}` sends it back
+to the implementer and `{"action":"reject"}` publishes nothing.
+
 Run a local pull-request review:
 
 ```bash
@@ -268,9 +323,10 @@ Set the target and start the local Agent Server:
 WORKFLOW_REPO=/path/to/your-repository .venv/bin/langgraph dev
 ```
 
-Studio exposes two graphs:
+Studio exposes three graphs:
 
 - `jira_delivery`
+- `sdlc_beta`
 - `pr_review`
 
 Use a unique thread ID per run. Studio's development server uses its own local
@@ -283,6 +339,10 @@ repository under `.agentic-workflow/`.
   offers changes made during its own run for publication.
 - `.env`, `.git`, `.agents`, and `.claude` paths are protected from final
   publication.
+- The beta flow implements in a separate Git worktree, so your checkout and its
+  uncommitted changes are never touched, and a rejection publishes nothing.
+- The UI only listens on `127.0.0.1` and rejects requests from other websites
+  (cross-origin or non-JSON writes, and unexpected `Host` headers).
 - Implementation is asked not to commit or push. Git publication occurs only
   after a human approves an explicit file list.
 - PR review posts nothing until a human explicitly chooses an outcome and the
@@ -315,8 +375,8 @@ the approval model.
 - **Transparent cost and execution visibility:** provider-reported usage where
   available, separated from payload estimates; live events, elapsed time,
   model/effort provenance, and privacy-safe local audit logs.
-- **Stronger isolation:** optional worktrees or sandboxes per delivery run,
-  protected-file policies, change budgets, safe cleanup, and an explicit
+- **Stronger isolation:** the beta flow already uses a worktree per run; next
+  are sandboxes, protected-file policies, change budgets, and an explicit
   handoff/recovery path for interrupted runs.
 - **Distribution:** versioned configuration schema, a portable installer,
   example repositories, a compatibility matrix, CI smoke tests, and release
@@ -339,7 +399,7 @@ The `dev` extra adds pytest and LangGraph Studio (`langgraph dev`).
 ```text
 agentic_workflow/       Runtime, graphs, adapters, UI, and CLI
 workflow_tests/         Unit tests for flow behavior and UI runtime
-docs/graphs/            Mermaid sources for both workflows
+docs/graphs/            Mermaid sources and SVGs for each workflow
 langgraph.json          LangGraph Studio graph registry
 .env.example            Local-only configuration template
 ```

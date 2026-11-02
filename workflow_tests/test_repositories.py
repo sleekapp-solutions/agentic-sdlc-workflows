@@ -115,3 +115,30 @@ def test_runs_cannot_start_until_a_git_repository_is_selected(tmp_path):
     assert runtime.environment()["repository"]["is_git_repository"] is False
     with pytest.raises(ValueError, match="Select a Git repository"):
         runtime.start_sdlc_beta("PROJ-1")
+
+
+def call(app, method, path, headers=None, body=b""):
+    from io import BytesIO
+
+    captured = {}
+    environ = {
+        "REQUEST_METHOD": method, "PATH_INFO": path, "wsgi.input": BytesIO(body), "CONTENT_LENGTH": str(len(body)),
+        "HTTP_HOST": "127.0.0.1:8080", "SERVER_PORT": "8080", **(headers or {}),
+    }
+    app(environ, lambda status, response_headers: captured.update(status=status))
+    return captured["status"]
+
+
+def test_ui_rejects_requests_another_website_could_send(tmp_path):
+    from agentic_workflow.local_ui import LocalUiApplication
+
+    target = make_repo(tmp_path / "target")
+    app = LocalUiApplication(WorkflowRuntime(make_repo(tmp_path / "app"), tmp_path / "db.sqlite"))
+    body = ('{"path": "%s"}' % target).encode()
+    # A cross-site form or no-cors fetch can only send text/plain without a preflight.
+    assert call(app, "POST", "/api/repository", {"CONTENT_TYPE": "text/plain"}, body).startswith("403")
+    assert call(app, "POST", "/api/repository", {"CONTENT_TYPE": "application/json", "HTTP_ORIGIN": "https://evil.example"}, body).startswith("403")
+    # DNS rebinding arrives with the attacker's host name.
+    assert call(app, "GET", "/api/environment", {"HTTP_HOST": "evil.example:8080"}).startswith("403")
+    assert call(app, "POST", "/api/repository", {"CONTENT_TYPE": "application/json", "HTTP_ORIGIN": "http://127.0.0.1:8080"}, body).startswith("200")
+    assert call(app, "GET", "/api/environment", {"HTTP_HOST": "localhost:8080"}).startswith("200")

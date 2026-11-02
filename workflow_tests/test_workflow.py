@@ -117,6 +117,9 @@ class FakePullRequestReviewer:
         }
 
 
+LOCAL_HOST = {"HTTP_HOST": "127.0.0.1:8080", "SERVER_PORT": "8080"}
+
+
 def git_repository(path):
     """Runs only start in a Git checkout, so runtime tests use an empty one."""
     subprocess.run(["git", "init", "-q", str(path)], check=True)
@@ -282,7 +285,7 @@ def test_local_reviewer_ui_serves_its_browser_interface():
 
     body = b"".join(
         app(
-            {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.input": BytesIO()},
+            {"REQUEST_METHOD": "GET", "PATH_INFO": "/", "wsgi.input": BytesIO(), **LOCAL_HOST},
             start_response,
         )
     ).decode()
@@ -536,7 +539,7 @@ def test_environment_endpoint_reports_repo_and_non_sensitive_integration_state(t
     def start_response(status, headers):
         response["status"] = status
 
-    body = b"".join(app({"REQUEST_METHOD": "GET", "PATH_INFO": "/api/environment", "wsgi.input": BytesIO()}, start_response))
+    body = b"".join(app({"REQUEST_METHOD": "GET", "PATH_INFO": "/api/environment", "wsgi.input": BytesIO(), **LOCAL_HOST}, start_response))
     payload = json.loads(body)
 
     assert response["status"] == "200 OK"

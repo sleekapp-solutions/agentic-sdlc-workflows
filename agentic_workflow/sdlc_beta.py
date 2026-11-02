@@ -85,7 +85,9 @@ def build_sdlc_beta_graph(
     """
     worktrees = worktrees or WorktreeOperations(repo_root)
     access_check = access_check or check_access
-    validator_factory = validator_factory or (lambda path: ProjectValidator(path))
+    # Validation uses the commands captured when the run started, not whatever
+    # repository the UI has switched to since.
+    validator_factory = validator_factory or (lambda path, commands: ProjectValidator(path, commands))
 
     def progress(stage: str, message: str) -> None:
         if report:
@@ -102,7 +104,7 @@ def build_sdlc_beta_graph(
             "base_branch": state.get("base_branch") or worktrees.default_base_branch(),
             "current_branch": current.stdout.strip(),
             "worktree_root": str(worktrees.worktree_root()),
-            "validation_commands": [" ".join(command) for command in configured_validation_commands()],
+            "validation_commands": [list(command) for command in configured_validation_commands()],
             "guardrails": repository_guardrails(repo_root),
         }
         return {"repo_context": context, "status": "checking_access"}
@@ -157,7 +159,8 @@ def build_sdlc_beta_graph(
             state["ticket"], state["delivery_brief"], state["worktree"], state["repo_context"]["guardrails"], state.get("change_feedback") or None
         )
         progress("validating", "Running configured validation in the worktree")
-        validation = validator_factory(path).run()
+        commands = tuple(tuple(command) for command in state["repo_context"]["validation_commands"])
+        validation = validator_factory(path, commands).run()
         return {
             "implementation": implementation,
             "validation": validation,
@@ -222,7 +225,8 @@ def build_sdlc_beta_graph(
         if ticket["key"] not in title:
             title = f"{ticket['key']}: {title}"
         body = str(implementation.get("pr_body") or state["delivery_brief"]["pr_summary"]["body"]).strip()
-        body += f"\n\n---\nJira: [{ticket['key']}]({ticket.get('url', '')})"
+        if ticket.get("url"):
+            body += f"\n\n---\nJira: [{ticket['key']}]({ticket['url']})"
         result = worktrees.push_and_open_pull_request(
             worktree_path(state), worktree["branch"], worktree["base_branch"], worktree["base_ref"], title, body,
             draft=state.get("pr_mode", "draft") != "ready",

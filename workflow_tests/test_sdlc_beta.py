@@ -140,6 +140,7 @@ def test_approved_change_is_committed_in_a_worktree_and_opened_as_a_draft_pr(rep
     assert result["graph_context"]["blast_radius"] == "low"
     assert result["change_review"]["verdict"] == "approve"
     assert "Prefer value types." in FakeImplementer.calls[0]["guardrails"]
+    assert result["validation"]["skipped"] is True
     # The developer's own checkout is untouched while the agent works.
     assert git(repo, "branch", "--show-current") == "main"
     assert git(repo, "status", "--porcelain") == ""
@@ -266,3 +267,17 @@ def test_local_runtime_starts_the_beta_flow_and_offers_it_in_the_ui(repo, tmp_pa
     assert 'value="sdlc_beta"' in HTML
     with pytest.raises(ValueError):
         runtime.start_sdlc_beta("PROJ-14", pr_mode="merge")
+
+
+def test_validation_uses_the_commands_captured_when_the_run_started(repo, monkeypatch):
+    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "python3 -c 'print(\"checked\")'")
+    graph, _ = build(repo)
+    config = {"configurable": {"thread_id": "validation"}}
+    graph.invoke({"ticket_key": "PROJ-14"}, config=config)
+    # The UI switching to a repository without validation must not change this run.
+    monkeypatch.setenv("WORKFLOW_VALIDATION_COMMANDS", "")
+    result = graph.invoke(Command(resume={"action": "approve"}), config=config)
+
+    assert result["repo_context"]["validation_commands"] == [["python3", "-c", 'print("checked")']]
+    assert result["validation"]["results"][0]["exit_code"] == 0
+    assert "checked" in result["validation"]["results"][0]["output"]

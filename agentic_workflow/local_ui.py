@@ -698,8 +698,28 @@ class LocalUiApplication:
         raw = environ["wsgi.input"].read(length)
         return json.loads(raw.decode("utf-8") or "{}")
 
+    @staticmethod
+    def _trusted_request(environ, method: str) -> bool:
+        """Reject requests another website could make through the user's browser.
+
+        The Host check blocks DNS rebinding. State-changing requests must be JSON
+        (which browsers only send cross-site after a CORS preflight this server
+        never approves) and, when the browser sends an Origin, come from this UI.
+        """
+        host = environ.get("HTTP_HOST", "")
+        port = environ.get("SERVER_PORT", "")
+        if host not in {f"127.0.0.1:{port}", f"localhost:{port}"}:
+            return False
+        if method != "POST":
+            return True
+        origin = environ.get("HTTP_ORIGIN")
+        content_type = environ.get("CONTENT_TYPE", "").split(";")[0].strip().lower()
+        return content_type == "application/json" and (origin is None or origin == f"http://{host}")
+
     def __call__(self, environ, start_response):
         method = environ.get("REQUEST_METHOD", "GET")
+        if not self._trusted_request(environ, method):
+            return self._respond(start_response, "403 Forbidden", json.dumps({"error": "Request rejected"}), "application/json; charset=utf-8")
         request_url = urlparse(environ.get("PATH_INFO", "/") + ("?" + environ.get("QUERY_STRING", "") if environ.get("QUERY_STRING") else ""))
         path = request_url.path
         if method == "GET" and path == "/":
